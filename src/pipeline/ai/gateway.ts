@@ -22,6 +22,11 @@ export interface LessonGenerationInput {
   isFollowUp: boolean;
 }
 
+export interface LessonFactClaim {
+  id: string;
+  text: string;
+}
+
 export interface NewsAiGateway {
   fingerprint(articles: SourceArticle[]): Promise<EventFingerprint[]>;
   reviewPairs(pairs: DuplicatePair[]): Promise<DuplicateReview[]>;
@@ -29,6 +34,7 @@ export interface NewsAiGateway {
 
 export interface LessonAiGateway {
   generateLesson(input: LessonGenerationInput, repairReason?: string): Promise<LessonArticle>;
+  verifyLessonFacts(sourceBody: string, claims: LessonFactClaim[]): Promise<void>;
 }
 
 export type AiGateway = NewsAiGateway & LessonAiGateway;

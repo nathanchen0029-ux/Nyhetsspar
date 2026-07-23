@@ -25,3 +25,10 @@ export const LESSON_SYSTEM = [
   "Quote 2 to 4 short source extracts, each at most 25 Swedish words and at most 80 quoted words total.",
   "A quote must appear verbatim in the source text.",
 ].join(" ");
+
+export const FACT_CHECK_SYSTEM = [
+  "Verify each supplied lesson claim against only the supplied primary source article body.",
+  "Do not use related coverage, titles, prior knowledge, or inference beyond the primary source.",
+  "Return one result for every claim ID.",
+  "Mark supported true only when the claim is supported by the source, and provide a short verbatim source evidence extract.",
+].join(" ");

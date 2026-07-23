@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { LessonArticle } from "../../src/contracts/content";
 import type { FingerprintedArticle, SourceArticle } from "../../src/contracts/transient";
 import { createOpenAiGateway } from "../../src/pipeline/ai/openai-gateway";
-import type { AiGateway } from "../../src/pipeline/ai/gateway";
+import type { AiGateway, LessonFactClaim } from "../../src/pipeline/ai/gateway";
 import { decorateParagraphs } from "../../src/pipeline/lessons/decorate";
 import { generateValidatedLesson } from "../../src/pipeline/lessons/generate";
 import { validateLessonAgainstSource } from "../../src/pipeline/lessons/validate";
@@ -11,6 +11,7 @@ import { validateLessonAgainstSource } from "../../src/pipeline/lessons/validate
 const sourceUrl = "https://www.svt.se/nyheter/test";
 const sourceBody = [
   "Förändringen träder i kraft i januari.",
+  "Förändringen träder i kraft efter beslutet.",
   "Kommunerna får nya regler.",
   "Beslutet gäller 42 kommuner.",
 ].join(" ");
@@ -59,7 +60,7 @@ function validLesson(): LessonArticle {
     summaries: { sv: "Sammanfattning", zh: "摘要", en: "Summary" },
     factPoints: ["Beslutet gäller 42 kommuner.", "Kommunerna får nya regler."],
     originalSentenceNotes: [
-      { quote: "Förändringen träder i kraft i januari.", sourceUrl, annotationIds: ["phrase:träda-i-kraft"] },
+      { quote: "Förändringen träder i kraft efter beslutet.", sourceUrl, annotationIds: ["phrase:träda-i-kraft"] },
       { quote: "Förändringen träder i kraft i januari.", sourceUrl, annotationIds: ["phrase:träda-i-kraft"] },
     ],
     annotations: [annotation("phrase")],
@@ -84,7 +85,7 @@ function selected(): FingerprintedArticle {
   return {
     article,
     fingerprint: { candidateId: "one", who: ["kommunerna"], action: "beslutar", where: "Sverige", when: "2026-07-23", outcome: "regler", scope: "sweden", topic: "daily-life", canonical: "untrusted-model-canonical" },
-    related: [{ ...article, id: "related", source: "dn", canonicalUrl: "https://www.dn.se/related", url: "https://www.dn.se/related", body: "hemlig relaterad text" }],
+    related: [{ ...article, id: "related", source: "dn", title: "Relaterad hemlig rubrik", canonicalUrl: "https://www.dn.se/related", url: "https://www.dn.se/related", body: "hemlig relaterad text" }],
     isFollowUp: true,
   };
 }
@@ -118,6 +119,13 @@ describe("lesson validation", () => {
     expect(() => validateLessonAgainstSource(lesson, sourceBody, sourceUrl)).toThrow(/lesson-word-count/u);
   });
 
+  it("rejects numeric tokens that occur only inside a larger source number", () => {
+    const unsupported = validLesson();
+    unsupported.factPoints[0] = "Beslutet gäller 42 kommuner.";
+    const numericSource = sourceBody.replace("42 kommuner", "142 kommuner").concat(" 42,5 procent.");
+    expect(() => validateLessonAgainstSource(unsupported, numericSource, sourceUrl)).toThrow("lesson-unsupported-number:42");
+  });
+
   it("rejects unsupported numbers and source copying of 26 normalized words", () => {
     const unsupported = validLesson();
     unsupported.factPoints[0] = "Beslutet gäller 99 kommuner.";
@@ -146,10 +154,22 @@ describe("lesson validation", () => {
     expect(() => validateLessonAgainstSource(mismatch, sourceBody, sourceUrl)).toThrow("lesson-segment-target-mismatch");
   });
 
+  it("rejects annotations that were suppressed and never linked to a segment", () => {
+    const lesson = validLesson();
+    lesson.annotations.push({ ...annotation(), id: "vocabulary:kraft", canonical: "kraft" });
+    expect(() => validateLessonAgainstSource(lesson, sourceBody, sourceUrl)).toThrow("lesson-annotation-unlinked:vocabulary:kraft");
+  });
+
   it("binds every quoted annotation to a phrase or source fragment in that quote", () => {
     const lesson = validLesson();
     lesson.originalSentenceNotes[1]!.quote = "Kommunerna får nya regler.";
     expect(() => validateLessonAgainstSource(lesson, sourceBody, sourceUrl)).toThrow("lesson-quote-annotation-unbound");
+  });
+
+  it("rejects duplicate normalized quotes", () => {
+    const lesson = validLesson();
+    lesson.originalSentenceNotes[1]!.quote = "  Förändringen   träder i kraft efter beslutet.  ";
+    expect(() => validateLessonAgainstSource(lesson, sourceBody, sourceUrl)).toThrow("lesson-duplicate-quote");
   });
 });
 
@@ -158,23 +178,49 @@ describe("validated lesson generation", () => {
     const invalid = validLesson();
     invalid.wordCount = 299;
     const calls: Array<string | undefined> = [];
-    const gateway = { generateLesson: async (_input: unknown, reason?: string) => { calls.push(reason); return calls.length === 1 ? invalid : validLesson(); } } as AiGateway;
+    const gateway = { generateLesson: async (_input: unknown, reason?: string) => { calls.push(reason); return calls.length === 1 ? invalid : validLesson(); }, verifyLessonFacts: async () => undefined } as unknown as AiGateway;
     await expect(generateValidatedLesson(selected(), gateway)).resolves.toMatchObject({ id: "one" });
     expect(calls).toEqual([undefined, "lesson-word-count:300"]);
   });
 
   it("does not retry permanent gateway errors", async () => {
     let calls = 0;
-    const gateway = { generateLesson: async () => { calls += 1; throw Object.assign(new Error("bad request"), { status: 400 }); } } as unknown as AiGateway;
+    const gateway = { generateLesson: async () => { calls += 1; throw Object.assign(new Error("bad request"), { status: 400 }); }, verifyLessonFacts: async () => undefined } as unknown as AiGateway;
     await expect(generateValidatedLesson(selected(), gateway)).rejects.toThrow("bad request");
     expect(calls).toBe(1);
   });
 
   it("repairs a structured-output Zod error only once", async () => {
     let calls = 0;
-    const gateway = { generateLesson: async () => { calls += 1; throw z.object({ required: z.string() }).parse({}); } } as unknown as AiGateway;
+    const gateway = { generateLesson: async () => { calls += 1; throw z.object({ required: z.string() }).parse({}); }, verifyLessonFacts: async () => undefined } as unknown as AiGateway;
     await expect(generateValidatedLesson(selected(), gateway)).rejects.toBeInstanceOf(z.ZodError);
     expect(calls).toBe(2);
+  });
+
+  it("repairs once when the fact verifier rejects a non-numeric hallucination", async () => {
+    const reasons: Array<string | undefined> = [];
+    let claimIds: string[] = [];
+    let checks = 0;
+    const hallucinated = validLesson();
+    hallucinated.summaries.sv = "En okänd person orsakade beslutet.";
+    const gateway = {
+      generateLesson: async (_input: unknown, reason?: string) => { reasons.push(reason); return reasons.length === 1 ? hallucinated : validLesson(); },
+      verifyLessonFacts: async (_sourceBody: string, claims: LessonFactClaim[]) => { claimIds = claims.map((claim) => claim.id); checks += 1; if (claims.some((claim) => claim.text === hallucinated.summaries.sv)) throw new Error("lesson-unsupported-fact:summary-sv"); },
+    } as unknown as AiGateway;
+    await expect(generateValidatedLesson(selected(), gateway)).resolves.toMatchObject({ id: "one" });
+    expect(reasons).toEqual([undefined, "lesson-unsupported-fact:summary-sv"]);
+    expect(checks).toBe(2);
+    expect(claimIds).toEqual(expect.arrayContaining(["study-title", "study-p1-s1", "summary-sv", "summary-zh", "summary-en", "fact-point-1", "fact-point-2"]));
+  });
+
+  it("does not repair when fact verification has a permanent transport error", async () => {
+    let generations = 0;
+    const gateway = {
+      generateLesson: async () => { generations += 1; return validLesson(); },
+      verifyLessonFacts: async () => { throw Object.assign(new Error("bad fact request"), { status: 400 }); },
+    } as unknown as AiGateway;
+    await expect(generateValidatedLesson(selected(), gateway)).rejects.toThrow("bad fact request");
+    expect(generations).toBe(1);
   });
 });
 
@@ -191,8 +237,28 @@ describe("OpenAI lesson gateway", () => {
     };
     const result = await createOpenAiGateway({ apiKey: "test", client: client as never, model: "model" }).generateLesson(selected());
     expect(result).toMatchObject({ id: "one", sourceUrl, eventFingerprint: "untrusted-model-canonical", isFollowUp: true, contentHash: "sha256:test" });
-    expect(payloads[0]).toMatchObject({ relatedCoverage: [{ source: "dn", title: "Testnyhet", url: "https://www.dn.se/related" }] });
+    expect(JSON.stringify(payloads[0])).not.toContain("relatedCoverage");
+    expect(JSON.stringify(payloads[0])).not.toContain("Relaterad hemlig rubrik");
     expect(JSON.stringify(payloads[0])).not.toContain("hemlig relaterad text");
+  });
+
+  it("requires complete fact-check claim IDs and verbatim short primary-source evidence", async () => {
+    const client = { responses: { parse: async () => ({ output_parsed: { items: [] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
+    const gateway = createOpenAiGateway({ apiKey: "test", client: client as never });
+    await expect(gateway.verifyLessonFacts(sourceBody, [{ id: "claim-1", text: "En kontroll" }])).rejects.toThrow(/claimId/u);
+
+    const badEvidenceClient = { responses: { parse: async () => ({ output_parsed: { items: [{ claimId: "claim-1", supported: true, evidence: "saknas i källan", reason: "fel" }] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
+    const badEvidenceGateway = createOpenAiGateway({ apiKey: "test", client: badEvidenceClient as never });
+    await expect(badEvidenceGateway.verifyLessonFacts(sourceBody, [{ id: "claim-1", text: "En kontroll" }])).rejects.toThrow("lesson-fact-evidence-not-in-source");
+
+    const unsupportedClient = { responses: { parse: async () => ({ output_parsed: { items: [{ claimId: "claim-1", supported: false, evidence: "Kommunerna får nya regler.", reason: "personen finns inte i källan" }] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
+    const unsupportedGateway = createOpenAiGateway({ apiKey: "test", client: unsupportedClient as never });
+    await expect(unsupportedGateway.verifyLessonFacts(sourceBody, [{ id: "claim-1", text: "En okänd person orsakade beslutet." }])).rejects.toThrow("lesson-unsupported-fact:claim-1");
+
+    const longEvidence = words(26);
+    const longEvidenceClient = { responses: { parse: async () => ({ output_parsed: { items: [{ claimId: "claim-1", supported: true, evidence: longEvidence, reason: "för långt" }] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
+    const longEvidenceGateway = createOpenAiGateway({ apiKey: "test", client: longEvidenceClient as never });
+    await expect(longEvidenceGateway.verifyLessonFacts(`${sourceBody} ${longEvidence}`, [{ id: "claim-1", text: "En kontroll" }])).rejects.toThrow("lesson-fact-evidence-too-long");
   });
 });
 

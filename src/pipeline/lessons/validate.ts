@@ -28,6 +28,12 @@ function normalizedWords(text: string): string[] {
   return normalize(text).match(/[\p{L}\p{N}]+/gu) ?? [];
 }
 
+const numericToken = /(?<![\p{L}\p{N}])\d+(?:[.,]\d+)?%?(?![\p{L}\p{N}])/gu;
+
+function numericTokens(text: string): Set<string> {
+  return new Set(text.normalize("NFKC").match(numericToken) ?? []);
+}
+
 export function validateLessonAgainstSource(input: LessonArticle, sourceBody: string, sourceUrl: string): LessonArticle {
   const actualCount = countSwedishWords(lessonText(input));
   if (actualCount < 300 || actualCount > 500 || input.wordCount !== actualCount) {
@@ -39,6 +45,7 @@ export function validateLessonAgainstSource(input: LessonArticle, sourceBody: st
 
   const annotationsById = new Map<string, Annotation>();
   const canonicalKeys = new Set<string>();
+  const linkedAnnotationIds = new Set<string>();
   const study = lessonText(lesson);
   for (const annotation of lesson.annotations) {
     if (annotationsById.has(annotation.id)) throw new Error(`lesson-duplicate-annotation-id:${annotation.id}`);
@@ -62,11 +69,19 @@ export function validateLessonAgainstSource(input: LessonArticle, sourceBody: st
       if (!annotationMatchesSegment(annotation, segment.text)) {
         throw new Error(`lesson-segment-target-mismatch:${segment.annotationId}`);
       }
+      linkedAnnotationIds.add(segment.annotationId);
     }
   }
+  for (const id of annotationsById.keys()) {
+    if (!linkedAnnotationIds.has(id)) throw new Error(`lesson-annotation-unlinked:${id}`);
+  }
 
+  const quoteKeys = new Set<string>();
   for (const note of lesson.originalSentenceNotes) {
     if (countSwedishWords(note.quote) > 25) throw new Error("lesson-quote-too-long");
+    const quoteKey = normalize(note.quote);
+    if (quoteKeys.has(quoteKey)) throw new Error("lesson-duplicate-quote");
+    quoteKeys.add(quoteKey);
     if (!sourceBody.includes(note.quote)) throw new Error("lesson-quote-not-in-source");
     if (note.sourceUrl !== sourceUrl) throw new Error("lesson-quote-source-mismatch");
     for (const id of note.annotationIds) {
@@ -78,10 +93,9 @@ export function validateLessonAgainstSource(input: LessonArticle, sourceBody: st
     }
   }
 
-  const numericClaims = `${study}\n${lesson.factPoints.join("\n")}`.match(/(?<![\p{L}\p{N}])\d+(?:[.,]\d+)?%?(?![\p{L}\p{N}])/gu) ?? [];
-  const normalizedSource = normalize(sourceBody);
-  for (const claim of new Set(numericClaims)) {
-    if (!normalizedSource.includes(normalize(claim))) throw new Error(`lesson-unsupported-number:${claim}`);
+  const sourceNumbers = numericTokens(sourceBody);
+  for (const claim of numericTokens(`${study}\n${lesson.factPoints.join("\n")}`)) {
+    if (!sourceNumbers.has(claim)) throw new Error(`lesson-unsupported-number:${claim}`);
   }
 
   const sourceWords = normalizedWords(sourceBody);

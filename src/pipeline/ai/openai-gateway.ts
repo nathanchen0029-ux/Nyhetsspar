@@ -4,8 +4,8 @@ import { z } from "zod";
 import { AnnotationSchema, LessonArticleSchema, ScopeSchema, TopicSchema, countSwedishWords } from "../../contracts/content";
 import type { EventFingerprint } from "../../contracts/transient";
 import { decorateParagraphs } from "../lessons/decorate";
-import type { AiGateway, DuplicatePair, DuplicateReview } from "./gateway";
-import { DUPLICATE_SYSTEM, FINGERPRINT_SYSTEM, LESSON_SYSTEM } from "./prompts";
+import type { AiGateway, DuplicatePair, DuplicateReview, LessonFactClaim } from "./gateway";
+import { DUPLICATE_SYSTEM, FACT_CHECK_SYSTEM, FINGERPRINT_SYSTEM, LESSON_SYSTEM } from "./prompts";
 
 const FingerprintBatchSchema = z.object({ items: z.array(z.object({
   candidateId: z.string(), who: z.array(z.string()), action: z.string(), where: z.string(), when: z.string(), outcome: z.string(),
@@ -27,6 +27,12 @@ const LessonDraftSchema = z.object({
   originalSentenceNotes: z.array(z.object({ quote: z.string().min(1), annotationIds: z.array(z.string()).min(1) })).min(2).max(4),
   annotations: z.array(AnnotationSchema).min(6).max(18),
 });
+const FactCheckBatchSchema = z.object({ items: z.array(z.object({
+  claimId: z.string().min(1),
+  supported: z.boolean(),
+  evidence: z.string().min(1),
+  reason: z.string().min(1),
+})) });
 
 type ParseClient = Pick<OpenAI, "responses">;
 
@@ -52,6 +58,19 @@ function assertOneForEach(kind: string, expectedIds: readonly string[], received
 function isTransient(error: Error): boolean {
   const status = typeof error === "object" && "status" in error ? Number((error as { status?: unknown }).status) : 0;
   return status === 429 || status >= 500 || error.name === "APIConnectionError" || error.name === "APIConnectionTimeoutError" || error.name === "APITimeoutError";
+}
+
+function assertFactClaimIds(expectedClaims: readonly LessonFactClaim[], receivedIds: readonly string[]): void {
+  const expectedIds = expectedClaims.map((claim) => claim.id);
+  const expected = new Set(expectedIds);
+  if (expected.size !== expectedIds.length) throw new Error("lesson-fact-claimId-duplicate-request");
+  const received = new Set<string>();
+  for (const id of receivedIds) {
+    if (!expected.has(id)) throw new Error("lesson-fact-claimId-unknown");
+    if (received.has(id)) throw new Error("lesson-fact-claimId-duplicate");
+    received.add(id);
+  }
+  if (received.size !== expected.size) throw new Error("lesson-fact-claimId-missing");
 }
 
 export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
@@ -112,7 +131,6 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
             body: input.article.body.length <= 12_000 ? input.article.body : `${input.article.body.slice(0, 9_000)}\n[…]\n${input.article.body.slice(-3_000)}`,
           },
           eventFingerprint: input.fingerprint,
-          relatedCoverage: input.related.map(({ source, title, canonicalUrl }) => ({ source, title, url: canonicalUrl })),
           repairReason,
         },
       ));
@@ -139,6 +157,22 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
         generationModel: model,
         contentHash: input.article.contentHash,
       });
+    },
+    async verifyLessonFacts(sourceBody, claims) {
+      if (claims.length === 0) return;
+      const result = FactCheckBatchSchema.parse(await parse(
+        FactCheckBatchSchema,
+        "lesson_fact_check",
+        FACT_CHECK_SYSTEM,
+        { sourceBody, claims },
+      ));
+      assertFactClaimIds(claims, result.items.map((item) => item.claimId));
+      for (const item of result.items) {
+        if (!item.supported) throw new Error(`lesson-unsupported-fact:${item.claimId}`);
+        const evidenceWords = countSwedishWords(item.evidence);
+        if (evidenceWords === 0 || evidenceWords > 25) throw new Error(`lesson-fact-evidence-too-long:${item.claimId}`);
+        if (!sourceBody.includes(item.evidence)) throw new Error(`lesson-fact-evidence-not-in-source:${item.claimId}`);
+      }
     },
   };
 }

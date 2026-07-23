@@ -22,3 +22,12 @@
 ## Concerns
 
 None. Validation intentionally rejects model output that is structurally valid but not safely attributable to the selected primary source; that output receives the single permitted repair attempt.
+
+## Follow-up review fixes
+
+- Numeric claims now compare exact Unicode numeric tokens, so `42` cannot be supported by `142` or `42,5`.
+- Every annotation must be represented by a valid decorated segment; normalized duplicate quotes are rejected.
+- The lesson-generation prompt no longer receives related coverage. Related links remain locally assembled for display only.
+- Added a primary-source-only fact-check operation for the title, sentence-segmented study text, all three summaries, and fact points. It enforces exact claim IDs, affirmative support, and non-empty verbatim evidence of at most 25 words. Unsupported factual claims receive the existing single content repair; transport/permanent verification failures do not.
+
+Follow-up verification: focused lesson/gateway/contracts tests (31 passed), `pnpm exec tsc --noEmit`, full `pnpm test` (80 passed), and `git diff --check` all passed.
