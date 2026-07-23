@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item><title>Ny svensk regel presenteras</title><link>https://www.aftonbladet.se/nyheter/a/example/ny-svensk-regel?utm_source=rss&amp;keep=1#top</link></item>
+    <item><title>Fel domän ska ignoreras</title><link>https://www.dn.se/sverige/fel</link></item>
+    <item><title>Osäker länk ska ignoreras</title><link>javascript:alert(1)</link></item>
+  </channel>
+</rss>
