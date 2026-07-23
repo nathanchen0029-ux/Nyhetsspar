@@ -64,34 +64,79 @@ export function knownItemIdentity(
 
 export function createKnownStore(storage?: BrowserStorage) {
   const resolvedStorage = resolveBrowserStorage(storage);
+  const unreadable = Symbol("unreadable-storage");
+  type ObservedRaw = string | null | typeof unreadable;
   let volatileRecords: KnownRecord[] = [];
+  let lastObservedRaw: ObservedRaw = unreadable;
+  let incompatibleRaw: string | undefined;
+  let writeFailedAgainst: ObservedRaw | undefined;
+  let readUnavailable = false;
 
   const read = (): KnownRecord[] => {
+    let raw: string | null;
     try {
-      const raw = resolvedStorage.getItem(KEY);
-      if (raw === null) {
-        volatileRecords = [];
-        return volatileRecords;
-      }
-      const parsed = KnownExportSchema.safeParse(JSON.parse(raw) as unknown);
-      if (!parsed.success) {
-        return [];
-      }
-      volatileRecords = parsed.data.records;
-      return parsed.data.records;
+      raw = resolvedStorage.getItem(KEY);
     } catch {
+      lastObservedRaw = unreadable;
+      readUnavailable = true;
       return volatileRecords;
     }
+
+    readUnavailable = false;
+    lastObservedRaw = raw;
+    if (
+      writeFailedAgainst !== undefined &&
+      Object.is(raw, writeFailedAgainst)
+    ) {
+      return volatileRecords;
+    }
+    writeFailedAgainst = undefined;
+
+    if (raw === null) {
+      incompatibleRaw = undefined;
+      volatileRecords = [];
+      return volatileRecords;
+    }
+    if (raw === incompatibleRaw) {
+      return volatileRecords;
+    }
+
+    let value: unknown;
+    try {
+      value = JSON.parse(raw) as unknown;
+    } catch {
+      incompatibleRaw = raw;
+      volatileRecords = [];
+      return volatileRecords;
+    }
+    const parsed = KnownExportSchema.safeParse(value);
+    if (!parsed.success) {
+      incompatibleRaw = raw;
+      volatileRecords = [];
+      return volatileRecords;
+    }
+    incompatibleRaw = undefined;
+    volatileRecords = parsed.data.records;
+    return parsed.data.records;
   };
 
-  const write = (records: KnownRecord[]): void => {
+  const write = (records: KnownRecord[], forceReset = false): void => {
     const parsed = KnownExportSchema.parse({ version: 1, records });
     volatileRecords = parsed.records;
+    if ((readUnavailable || incompatibleRaw !== undefined) && !forceReset) {
+      return;
+    }
+    const serialized = JSON.stringify(parsed);
     try {
-      resolvedStorage.setItem(KEY, JSON.stringify(parsed));
+      resolvedStorage.setItem(KEY, serialized);
+      lastObservedRaw = serialized;
+      incompatibleRaw = undefined;
+      writeFailedAgainst = undefined;
+      readUnavailable = false;
     } catch {
       // Browser privacy settings may make localStorage unavailable. The
       // in-memory copy keeps this session usable without exposing an error.
+      writeFailedAgainst = lastObservedRaw;
     }
   };
 
@@ -127,7 +172,8 @@ export function createKnownStore(storage?: BrowserStorage) {
       );
     },
     clearAll(): void {
-      write([]);
+      read();
+      write([], true);
     },
     exportJson(): string {
       return `${JSON.stringify({ version: 1, records: read() }, null, 2)}\n`;

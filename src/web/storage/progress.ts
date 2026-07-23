@@ -37,42 +37,86 @@ function emptyProgress(): ProgressState {
 
 export function createProgressStore(storage?: BrowserStorage) {
   const resolvedStorage = resolveBrowserStorage(storage);
+  const unreadable = Symbol("unreadable-storage");
+  type ObservedRaw = string | null | typeof unreadable;
   let volatileState = emptyProgress();
+  let lastObservedRaw: ObservedRaw = unreadable;
+  let incompatibleRaw: string | undefined;
+  let writeFailedAgainst: ObservedRaw | undefined;
+  let readUnavailable = false;
 
   const read = (): ProgressState => {
+    let raw: string | null;
     try {
-      const raw = resolvedStorage.getItem(KEY);
-      if (raw === null) {
-        volatileState = emptyProgress();
-        return volatileState;
-      }
-      const value: unknown = JSON.parse(raw);
-      const current = ProgressStateSchema.safeParse(value);
-      if (current.success) {
-        volatileState = current.data;
-        return current.data;
-      }
-      const legacy = LegacyProgressStateSchema.safeParse(value);
-      if (legacy.success) {
-        volatileState = {
-          ...emptyProgress(),
-          completedIds: [...new Set(legacy.data.completedIds)],
-        };
-        return volatileState;
-      }
-      return emptyProgress();
+      raw = resolvedStorage.getItem(KEY);
     } catch {
+      lastObservedRaw = unreadable;
+      readUnavailable = true;
       return volatileState;
     }
+
+    readUnavailable = false;
+    lastObservedRaw = raw;
+    if (
+      writeFailedAgainst !== undefined &&
+      Object.is(raw, writeFailedAgainst)
+    ) {
+      return volatileState;
+    }
+    writeFailedAgainst = undefined;
+
+    if (raw === null) {
+      incompatibleRaw = undefined;
+      volatileState = emptyProgress();
+      return volatileState;
+    }
+    if (raw === incompatibleRaw) {
+      return volatileState;
+    }
+
+    let value: unknown;
+    try {
+      value = JSON.parse(raw) as unknown;
+    } catch {
+      incompatibleRaw = raw;
+      volatileState = emptyProgress();
+      return volatileState;
+    }
+    const current = ProgressStateSchema.safeParse(value);
+    if (current.success) {
+      incompatibleRaw = undefined;
+      volatileState = current.data;
+      return current.data;
+    }
+    const legacy = LegacyProgressStateSchema.safeParse(value);
+    if (legacy.success) {
+      incompatibleRaw = undefined;
+      volatileState = {
+        ...emptyProgress(),
+        completedIds: [...new Set(legacy.data.completedIds)],
+      };
+      return volatileState;
+    }
+    incompatibleRaw = raw;
+    volatileState = emptyProgress();
+    return volatileState;
   };
 
   const write = (state: ProgressState): void => {
     const parsed = ProgressStateSchema.parse(state);
     volatileState = parsed;
+    if (readUnavailable || incompatibleRaw !== undefined) {
+      return;
+    }
+    const serialized = JSON.stringify(parsed);
     try {
-      resolvedStorage.setItem(KEY, JSON.stringify(parsed));
+      resolvedStorage.setItem(KEY, serialized);
+      lastObservedRaw = serialized;
+      writeFailedAgainst = undefined;
+      readUnavailable = false;
     } catch {
       // Keep the validated in-memory state when localStorage is blocked.
+      writeFailedAgainst = lastObservedRaw;
     }
   };
 

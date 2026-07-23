@@ -6,7 +6,10 @@ import type { Annotation, LessonArticle } from "../../src/contracts/content";
 import { AnnotationText } from "../../src/web/components/AnnotationText";
 import { LanguageCard } from "../../src/web/components/LanguageCard";
 import { LessonPage } from "../../src/web/pages/LessonPage";
-import { createKnownStore } from "../../src/web/storage/known";
+import {
+  createKnownStore,
+  type BrowserStorage,
+} from "../../src/web/storage/known";
 import { createProgressStore } from "../../src/web/storage/progress";
 
 function knownRecord(
@@ -148,21 +151,33 @@ describe("known-item storage", () => {
   });
 
   it("fails safely on malformed or unsupported persisted data", () => {
-    localStorage.setItem("nyhetsspar.known.v1", "{not-json");
+    const malformedRaw = "{not-json";
+    localStorage.setItem("nyhetsspar.known.v1", malformedRaw);
     const malformed = createKnownStore(localStorage);
 
     expect(malformed.list()).toEqual([]);
     expect(() => malformed.isKnown("vocabulary", "regering")).not.toThrow();
+    malformed.mark(knownRecord("tillfällig"));
+    expect(malformed.isKnown("vocabulary", "tillfällig")).toBe(true);
+    expect(localStorage.getItem("nyhetsspar.known.v1")).toBe(malformedRaw);
 
-    localStorage.setItem(
-      "nyhetsspar.known.v1",
-      JSON.stringify({ version: 2, records: [knownRecord("regering")] }),
-    );
+    const unsupportedRaw = JSON.stringify({
+      version: 2,
+      records: [knownRecord("regering")],
+    });
+    localStorage.setItem("nyhetsspar.known.v1", unsupportedRaw);
     const unsupported = createKnownStore(localStorage);
 
     expect(unsupported.list()).toEqual([]);
     expect(() => unsupported.mark(knownRecord("kommun"))).not.toThrow();
     expect(unsupported.isKnown("vocabulary", "kommun")).toBe(true);
+    expect(localStorage.getItem("nyhetsspar.known.v1")).toBe(unsupportedRaw);
+
+    unsupported.clearAll();
+    expect(JSON.parse(localStorage.getItem("nyhetsspar.known.v1") ?? "")).toEqual({
+      version: 1,
+      records: [],
+    });
   });
 
   it("keeps a volatile safe state when browser storage is unavailable", () => {
@@ -231,6 +246,65 @@ describe("known-item storage", () => {
     expect(() => store.importJson('{"version":2,"records":[]}')).toThrow();
     expect(store.list()).toHaveLength(2);
   });
+
+  it("adopts externally cleared or repaired data after an incompatible value", () => {
+    localStorage.setItem("nyhetsspar.known.v1", '{"version":9}');
+    const store = createKnownStore(localStorage);
+    store.mark(knownRecord("session-only"));
+
+    localStorage.removeItem("nyhetsspar.known.v1");
+    expect(store.list()).toEqual([]);
+    store.mark(knownRecord("persisted"));
+    expect(
+      JSON.parse(localStorage.getItem("nyhetsspar.known.v1") ?? "").records,
+    ).toHaveLength(1);
+
+    localStorage.setItem(
+      "nyhetsspar.known.v1",
+      JSON.stringify({
+        version: 1,
+        records: [knownRecord("external")],
+      }),
+    );
+    expect(store.list().map((record) => record.canonical)).toEqual(["external"]);
+  });
+
+  it("keeps session changes when reads succeed but writes are rejected", () => {
+    let raw: string | null = null;
+    const storage: BrowserStorage = {
+      getItem: () => raw,
+      setItem: () => {
+        throw new DOMException("quota", "QuotaExceededError");
+      },
+      removeItem: () => {
+        raw = null;
+      },
+    };
+    const store = createKnownStore(storage);
+
+    store.mark(knownRecord("kommun"));
+
+    expect(store.isKnown("vocabulary", "kommun")).toBe(true);
+    expect(store.list().map((record) => record.canonical)).toEqual(["kommun"]);
+    expect(raw).toBeNull();
+  });
+
+  it("does not overwrite storage whose existing value cannot be inspected", () => {
+    const setItem = vi.fn();
+    const storage: BrowserStorage = {
+      getItem: () => {
+        throw new DOMException("blocked", "SecurityError");
+      },
+      setItem,
+      removeItem: () => undefined,
+    };
+    const store = createKnownStore(storage);
+
+    store.mark(knownRecord("session-only"));
+
+    expect(store.isKnown("vocabulary", "session-only")).toBe(true);
+    expect(setItem).not.toHaveBeenCalled();
+  });
 });
 
 describe("article progress storage", () => {
@@ -265,16 +339,26 @@ describe("article progress storage", () => {
       new Set(["legacy-article"]),
     );
 
-    localStorage.setItem("nyhetsspar.progress.v1", "{broken");
-    expect(createProgressStore(localStorage).completed()).toEqual(new Set());
+    const malformedRaw = "{broken";
+    localStorage.setItem("nyhetsspar.progress.v1", malformedRaw);
+    const malformed = createProgressStore(localStorage);
+    malformed.markOpened("session-opened");
+    malformed.setCompleted("session-completed", true);
+    malformed.savePosition("session-opened", 120);
+    expect(malformed.opened()).toEqual(new Set(["session-opened"]));
+    expect(malformed.completed()).toEqual(new Set(["session-completed"]));
+    expect(malformed.position("session-opened")).toBe(120);
+    expect(localStorage.getItem("nyhetsspar.progress.v1")).toBe(malformedRaw);
 
-    localStorage.setItem(
-      "nyhetsspar.progress.v1",
-      JSON.stringify({ version: 3, completedIds: ["unsupported"] }),
-    );
+    const unsupportedRaw = JSON.stringify({
+      version: 3,
+      completedIds: ["unsupported"],
+    });
+    localStorage.setItem("nyhetsspar.progress.v1", unsupportedRaw);
     const unsupported = createProgressStore(localStorage);
     expect(() => unsupported.markOpened("new-article")).not.toThrow();
     expect(unsupported.opened()).toEqual(new Set(["new-article"]));
+    expect(localStorage.getItem("nyhetsspar.progress.v1")).toBe(unsupportedRaw);
   });
 
   it("respects progress cleared outside the store instance", () => {
@@ -284,6 +368,71 @@ describe("article progress storage", () => {
     localStorage.clear();
 
     expect(store.completed()).toEqual(new Set());
+  });
+
+  it("recovers after incompatible progress is externally cleared or repaired", () => {
+    localStorage.setItem("nyhetsspar.progress.v1", '{"version":7}');
+    const store = createProgressStore(localStorage);
+    store.markOpened("session-only");
+
+    localStorage.removeItem("nyhetsspar.progress.v1");
+    expect(store.opened()).toEqual(new Set());
+    store.markOpened("persisted");
+    expect(
+      JSON.parse(localStorage.getItem("nyhetsspar.progress.v1") ?? "").openedIds,
+    ).toEqual(["persisted"]);
+
+    localStorage.setItem(
+      "nyhetsspar.progress.v1",
+      JSON.stringify({
+        version: 1,
+        openedIds: ["external"],
+        completedIds: [],
+        positions: {},
+        lastOpenedId: "external",
+      }),
+    );
+    expect(store.opened()).toEqual(new Set(["external"]));
+  });
+
+  it("keeps progress changes when reads succeed but writes are rejected", () => {
+    let raw: string | null = null;
+    const storage: BrowserStorage = {
+      getItem: () => raw,
+      setItem: () => {
+        throw new DOMException("quota", "QuotaExceededError");
+      },
+      removeItem: () => {
+        raw = null;
+      },
+    };
+    const store = createProgressStore(storage);
+
+    store.markOpened("article-1");
+    store.setCompleted("article-1", true);
+    store.savePosition("article-1", 240);
+
+    expect(store.opened()).toEqual(new Set(["article-1"]));
+    expect(store.completed()).toEqual(new Set(["article-1"]));
+    expect(store.position("article-1")).toBe(240);
+    expect(raw).toBeNull();
+  });
+
+  it("does not overwrite progress whose existing value cannot be inspected", () => {
+    const setItem = vi.fn();
+    const storage: BrowserStorage = {
+      getItem: () => {
+        throw new DOMException("blocked", "SecurityError");
+      },
+      setItem,
+      removeItem: () => undefined,
+    };
+    const store = createProgressStore(storage);
+
+    store.markOpened("session-only");
+
+    expect(store.opened()).toEqual(new Set(["session-only"]));
+    expect(setItem).not.toHaveBeenCalled();
   });
 });
 
@@ -471,5 +620,53 @@ describe("LessonPage", () => {
     expect(progressStore.completed()).toEqual(new Set(["article-1"]));
     expect(screen.getByRole("button", { name: "已完成" })).toBeVisible();
     expect(onProgressChange).toHaveBeenCalledOnce();
+  });
+
+  it("restores every article mount, sending an unsaved next article to the top", () => {
+    const progressStore = createProgressStore(localStorage);
+    progressStore.savePosition("article-1", 340);
+    const requestFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        callback(0);
+        return 1;
+      });
+    const scrollTo = vi
+      .spyOn(window, "scrollTo")
+      .mockImplementation(() => undefined);
+
+    const first = render(
+      <MemoryRouter>
+        <LessonPage
+          article={repeatedAnnotationArticle("article-1")}
+          date="2026-07-23"
+          nextArticleId={null}
+          knownStore={createKnownStore(localStorage)}
+          progressStore={progressStore}
+          onProgressChange={() => undefined}
+        />
+      </MemoryRouter>,
+    );
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 340 });
+
+    first.unmount();
+    scrollTo.mockClear();
+    render(
+      <MemoryRouter>
+        <LessonPage
+          article={repeatedAnnotationArticle("article-2")}
+          date="2026-07-23"
+          nextArticleId={null}
+          knownStore={createKnownStore(localStorage)}
+          progressStore={progressStore}
+          onProgressChange={() => undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(scrollTo).toHaveBeenCalledOnce();
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+    requestFrame.mockRestore();
+    scrollTo.mockRestore();
   });
 });

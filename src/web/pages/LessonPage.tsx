@@ -31,9 +31,7 @@ export function LessonPage({
   useEffect(() => {
     progressStore.markOpened(article.id);
     const saved = progressStore.position(article.id);
-    if (saved > 0) {
-      window.requestAnimationFrame(() => window.scrollTo({ top: saved }));
-    }
+    window.requestAnimationFrame(() => window.scrollTo({ top: saved }));
 
     let timer: number | undefined;
     const remember = () => {
