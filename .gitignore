@@ -7,3 +7,6 @@ test-results/
 .env
 .env.*
 !.env.example
+.env.local
+.tmp-*
+coverage/
