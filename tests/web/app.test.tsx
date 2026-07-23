@@ -179,6 +179,29 @@ describe("App", () => {
     expect(window.location.hash).toBe("#/history");
   });
 
+  it("navigates to known-item management through the shared store", async () => {
+    createKnownStore(localStorage).mark({
+      kind: "vocabulary",
+      canonical: "regering",
+      original: "regeringen",
+      meaningZh: "政府",
+      meaningEn: "government",
+      markedAt: "2026-07-23T05:00:00.000Z",
+    });
+    const user = userEvent.setup();
+    mockDataRequests();
+    render(<App />);
+    await screen.findByRole("heading", { name: /Dagens lektion/i });
+
+    await user.click(screen.getByRole("link", { name: "已掌握" }));
+
+    expect(
+      screen.getByRole("heading", { name: "我的已掌握内容" }),
+    ).toBeVisible();
+    expect(screen.getByText("regering")).toBeVisible();
+    expect(window.location.hash).toBe("#/known");
+  });
+
   it("keeps the loading state until the indexed lesson is ready", async () => {
     let resolveLesson!: (response: Response) => void;
     const lessonResponse = new Promise<Response>((resolve) => {

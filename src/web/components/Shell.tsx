@@ -11,6 +11,7 @@ export function Shell({ children }: PropsWithChildren) {
         <nav aria-label="主导航">
           <NavLink to="/">今日课程</NavLink>
           <NavLink to="/history">历史</NavLink>
+          <NavLink to="/known">已掌握</NavLink>
         </nav>
       </header>
       <main id="main-content">{children}</main>

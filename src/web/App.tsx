@@ -13,6 +13,7 @@ import type {
 import { Shell } from "./components/Shell";
 import { LessonRepository } from "./data/repository";
 import { HistoryPage } from "./pages/HistoryPage";
+import { KnownPage } from "./pages/KnownPage";
 import { LessonPage } from "./pages/LessonPage";
 import { TodayPage } from "./pages/TodayPage";
 import { createKnownStore } from "./storage/known";
@@ -86,6 +87,7 @@ export function App() {
               }
             />
             <Route path="/history" element={<HistoryPage index={index} />} />
+            <Route path="/known" element={<KnownPage store={knownStore} />} />
             <Route
               path="/lesson/:date/:id"
               element={

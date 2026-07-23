@@ -24,6 +24,20 @@ const KnownExportSchema = z
 
 export type KnownRecord = z.infer<typeof KnownRecordSchema>;
 export type BrowserStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+export type KnownStoreErrorCode =
+  | "incompatible-storage"
+  | "storage-unavailable"
+  | "storage-write-failed";
+
+export class KnownStoreError extends Error {
+  readonly code: KnownStoreErrorCode;
+
+  constructor(code: KnownStoreErrorCode) {
+    super(code);
+    this.name = "KnownStoreError";
+    this.code = code;
+  }
+}
 
 const unavailableStorage: BrowserStorage = {
   getItem() {
@@ -176,15 +190,48 @@ export function createKnownStore(storage?: BrowserStorage) {
       write([], true);
     },
     exportJson(): string {
-      return `${JSON.stringify({ version: 1, records: read() }, null, 2)}\n`;
+      const records = read();
+      if (incompatibleRaw !== undefined) {
+        throw new KnownStoreError("incompatible-storage");
+      }
+      if (readUnavailable) {
+        throw new KnownStoreError("storage-unavailable");
+      }
+      return `${JSON.stringify({ version: 1, records }, null, 2)}\n`;
     },
-    importJson(raw: string): void {
+    importJson(raw: string): { added: number; total: number } {
       const imported = KnownExportSchema.parse(JSON.parse(raw) as unknown);
+      const current = read();
+      if (incompatibleRaw !== undefined) {
+        throw new KnownStoreError("incompatible-storage");
+      }
+      if (readUnavailable) {
+        throw new KnownStoreError("storage-unavailable");
+      }
+
       const merged = new Map<string, KnownRecord>();
-      for (const record of [...read(), ...imported.records]) {
+      for (const record of [...current, ...imported.records]) {
         merged.set(knownItemIdentity(record.kind, record.canonical), record);
       }
-      write([...merged.values()]);
+      const records = KnownExportSchema.parse({
+        version: 1,
+        records: [...merged.values()],
+      }).records;
+      const serialized = JSON.stringify({ version: 1, records });
+      try {
+        resolvedStorage.setItem(KEY, serialized);
+      } catch {
+        throw new KnownStoreError("storage-write-failed");
+      }
+      volatileRecords = records;
+      lastObservedRaw = serialized;
+      incompatibleRaw = undefined;
+      writeFailedAgainst = undefined;
+      readUnavailable = false;
+      return {
+        added: records.length - current.length,
+        total: records.length,
+      };
     },
   };
 }
