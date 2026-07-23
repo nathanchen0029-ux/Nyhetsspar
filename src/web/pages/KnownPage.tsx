@@ -34,7 +34,10 @@ export function KnownPage({ store }: { store: KnownStore }) {
     [category, normalizedQuery, revision, store],
   );
 
-  const explainStoreError = (reason: unknown, action: "导入" | "导出") => {
+  const explainStoreError = (
+    reason: unknown,
+    action: "导入" | "导出" | "清空",
+  ) => {
     if (
       reason instanceof KnownStoreError &&
       reason.code === "incompatible-storage"
@@ -147,10 +150,15 @@ export function KnownPage({ store }: { store: KnownStore }) {
             if (!window.confirm("确认清空全部已掌握项目？此操作不能撤销。")) {
               return;
             }
-            store.clearAll();
-            setError(null);
-            setMessage("已清空全部已掌握项目。");
-            setRevision((current) => current + 1);
+            try {
+              store.clearAll();
+              setError(null);
+              setMessage("已清空全部已掌握项目。");
+              setRevision((current) => current + 1);
+            } catch (reason) {
+              setMessage(null);
+              setError(explainStoreError(reason, "清空"));
+            }
           }}
         >
           清空全部

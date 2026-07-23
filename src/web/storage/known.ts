@@ -134,10 +134,10 @@ export function createKnownStore(storage?: BrowserStorage) {
     return parsed.data.records;
   };
 
-  const write = (records: KnownRecord[], forceReset = false): void => {
+  const write = (records: KnownRecord[]): void => {
     const parsed = KnownExportSchema.parse({ version: 1, records });
     volatileRecords = parsed.records;
-    if ((readUnavailable || incompatibleRaw !== undefined) && !forceReset) {
+    if (readUnavailable || incompatibleRaw !== undefined) {
       return;
     }
     const serialized = JSON.stringify(parsed);
@@ -186,8 +186,18 @@ export function createKnownStore(storage?: BrowserStorage) {
       );
     },
     clearAll(): void {
-      read();
-      write([], true);
+      const parsed = KnownExportSchema.parse({ version: 1, records: [] });
+      const serialized = JSON.stringify(parsed);
+      try {
+        resolvedStorage.setItem(KEY, serialized);
+      } catch {
+        throw new KnownStoreError("storage-write-failed");
+      }
+      volatileRecords = parsed.records;
+      lastObservedRaw = serialized;
+      incompatibleRaw = undefined;
+      writeFailedAgainst = undefined;
+      readUnavailable = false;
     },
     exportJson(): string {
       const records = read();
@@ -210,6 +220,11 @@ export function createKnownStore(storage?: BrowserStorage) {
       }
 
       const merged = new Map<string, KnownRecord>();
+      const currentIdentities = new Set(
+        current.map((record) =>
+          knownItemIdentity(record.kind, record.canonical),
+        ),
+      );
       for (const record of [...current, ...imported.records]) {
         merged.set(knownItemIdentity(record.kind, record.canonical), record);
       }
@@ -229,7 +244,9 @@ export function createKnownStore(storage?: BrowserStorage) {
       writeFailedAgainst = undefined;
       readUnavailable = false;
       return {
-        added: records.length - current.length,
+        added: [...merged.keys()].filter(
+          (identity) => !currentIdentities.has(identity),
+        ).length,
         total: records.length,
       };
     },

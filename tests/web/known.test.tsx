@@ -123,6 +123,36 @@ describe("KnownPage", () => {
     await waitFor(() => expect(store.list()).toHaveLength(2));
   });
 
+  it("counts imported additions by normalized identity after deduplication", () => {
+    localStorage.setItem(
+      "nyhetsspar.known.v1",
+      JSON.stringify({
+        version: 1,
+        records: [
+          record(" REGERING "),
+          record("regering", { original: "regeringen" }),
+        ],
+      }),
+    );
+    const store = createKnownStore(localStorage);
+
+    expect(
+      store.importJson(JSON.stringify({ version: 1, records: [] })),
+    ).toEqual({ added: 0, total: 1 });
+    expect(
+      store.importJson(
+        JSON.stringify({
+          version: 1,
+          records: [
+            record(" kommun "),
+            record("KOMMUN", { original: "kommunen" }),
+          ],
+        }),
+      ),
+    ).toEqual({ added: 1, total: 2 });
+    expect(store.list()).toHaveLength(2);
+  });
+
   it("rejects an invalid import without changing current records", async () => {
     const user = userEvent.setup();
     const store = createKnownStore(localStorage);
@@ -241,5 +271,38 @@ describe("KnownPage", () => {
     expect(store.list()).toEqual([]);
     expect(screen.queryByText("regering")).not.toBeInTheDocument();
     expect(screen.getByText("当前没有已掌握项目。")).toBeVisible();
+  });
+
+  it("reports a failed confirmed clear and keeps persisted and visible records", async () => {
+    let raw: string | null = null;
+    let rejectWrites = false;
+    const storage = {
+      getItem: () => raw,
+      setItem: (_key: string, value: string) => {
+        if (rejectWrites) {
+          throw new DOMException("quota", "QuotaExceededError");
+        }
+        raw = value;
+      },
+      removeItem: () => {
+        raw = null;
+      },
+    };
+    const store = createKnownStore(storage);
+    store.mark(record("regering"));
+    const before = raw;
+    rejectWrites = true;
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<KnownPage store={store} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "清空全部" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "清空失败：浏览器目前无法安全访问本地存储",
+    );
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByText("regering")).toBeVisible();
+    expect(store.list().map((item) => item.canonical)).toEqual(["regering"]);
+    expect(raw).toBe(before);
   });
 });
