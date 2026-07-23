@@ -1,5 +1,6 @@
 import {
   DailyLessonSchema,
+  LessonIndexEntrySchema,
   LessonIndexSchema,
   type DailyLesson,
   type LessonIndex,
@@ -21,6 +22,31 @@ export class LessonRepository {
   }
 
   async loadLesson(entry: LessonIndex["dates"][number]): Promise<DailyLesson> {
-    return DailyLessonSchema.parse(await getJson(entry.lessonPath));
+    const parsedEntry = LessonIndexEntrySchema.parse(entry);
+    const lesson = DailyLessonSchema.parse(await getJson(parsedEntry.lessonPath));
+    const articlesMatch =
+      lesson.articles.length === parsedEntry.articles.length &&
+      lesson.articles.every((article, index) => {
+        const indexed = parsedEntry.articles[index];
+        return (
+          indexed !== undefined &&
+          indexed.id === article.id &&
+          indexed.title === article.studyTitle &&
+          indexed.source === article.source &&
+          indexed.scope === article.scope &&
+          indexed.topic === article.topic &&
+          indexed.difficulty === article.difficulty.level &&
+          indexed.isFollowUp === article.isFollowUp
+        );
+      });
+
+    if (
+      lesson.date !== parsedEntry.date ||
+      lesson.status !== parsedEntry.status ||
+      !articlesMatch
+    ) {
+      throw new Error("lesson-index-mismatch");
+    }
+    return lesson;
   }
 }
