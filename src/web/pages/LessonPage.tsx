@@ -89,6 +89,35 @@ export function LessonPage({
           <p>
             {article.difficulty.level} · {article.difficulty.readingMinutes} min
           </p>
+          <ul className="annotation-legend" aria-label="标注图例">
+            <li>
+              <span
+                aria-hidden="true"
+                className="annotation-legend__sample annotation-legend__sample--vocabulary"
+              >
+                ord
+              </span>
+              <span>词汇 · Vocabulary</span>
+            </li>
+            <li>
+              <span
+                aria-hidden="true"
+                className="annotation-legend__sample annotation-legend__sample--phrase"
+              >
+                uttryck
+              </span>
+              <span>词组 · Phrase</span>
+            </li>
+            <li>
+              <span
+                aria-hidden="true"
+                className="annotation-legend__sample annotation-legend__sample--grammar"
+              >
+                sats
+              </span>
+              <span>语法 · Grammar</span>
+            </li>
+          </ul>
           <details className="summary-panel" open>
             <summary>60 秒读懂</summary>
             <p lang="sv">{article.summaries.sv}</p>
@@ -196,7 +225,7 @@ export function LessonPage({
           </nav>
         </section>
 
-        <aside aria-label="语言提示">
+        <aside className="annotation-rail" aria-label="语言提示">
           <h2>Språknycklar</h2>
           {visibleAnnotations.map((annotation) => (
             <div
