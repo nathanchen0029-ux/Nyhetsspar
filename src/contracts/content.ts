@@ -72,6 +72,9 @@ export const LessonArticleSchema = z.object({
     if (quoteWords > 25) {
       context.addIssue({ code: "custom", path: ["originalSentenceNotes", index, "quote"], message: "Each quote may contain at most 25 words." });
     }
+    if (note.sourceUrl !== article.sourceUrl) {
+      context.addIssue({ code: "custom", path: ["originalSentenceNotes", index, "sourceUrl"], message: "Quote URL must match the primary article URL." });
+    }
   });
   if (totalQuoteWords > 80) {
     context.addIssue({ code: "custom", path: ["originalSentenceNotes"], message: "Quotes may contain at most 80 words in total." });

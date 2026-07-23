@@ -87,6 +87,12 @@ describe("persisted content contracts", () => {
     expect(() => LessonArticleSchema.parse(article)).toThrow();
   });
 
+  it("rejects a quote URL that differs from the primary article URL", () => {
+    const article = validArticle();
+    article.originalSentenceNotes[0]!.sourceUrl = "https://www.svt.se/nyheter/other-article";
+    expect(() => LessonArticleSchema.parse(article)).toThrow();
+  });
+
   it("rejects source URLs whose domains do not match their declared sources", () => {
     const wrongPrimary = validArticle();
     wrongPrimary.sourceUrl = "https://www.dn.se/nyheter/test";
