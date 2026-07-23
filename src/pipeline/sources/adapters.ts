@@ -3,20 +3,21 @@ import { discoverFromHtmlPages, discoverFromRss } from "./discovery";
 
 const svt: SourceAdapter = {
   source: "svt",
-  discover(now, fetcher) {
+  discover(now, fetcher, robots) {
     return discoverFromHtmlPages(
       "svt",
       ["https://www.svt.se/nyheter", "https://www.svt.se/sport"],
       /^\/(?:nyheter|sport)\//u,
       now,
       fetcher,
+      robots,
     );
   },
 };
 
 const aftonbladet: SourceAdapter = {
   source: "aftonbladet",
-  discover(now, fetcher) {
+  discover(now, fetcher, robots) {
     return discoverFromRss(
       "aftonbladet",
       [
@@ -26,13 +27,14 @@ const aftonbladet: SourceAdapter = {
       ],
       now,
       fetcher,
+      robots,
     );
   },
 };
 
 const dn: SourceAdapter = {
   source: "dn",
-  discover(now, fetcher) {
+  discover(now, fetcher, robots) {
     return discoverFromHtmlPages(
       "dn",
       [
@@ -45,6 +47,7 @@ const dn: SourceAdapter = {
       /^\/(?:sverige|varlden|ekonomi|kultur|sport)\//u,
       now,
       fetcher,
+      robots,
     );
   },
 };

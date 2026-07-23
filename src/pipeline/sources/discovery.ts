@@ -1,7 +1,8 @@
 import { load } from "cheerio";
-import { XMLParser } from "fast-xml-parser";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
 import type { Source } from "../../contracts/content";
-import type { CandidateLink, Fetcher } from "../../contracts/transient";
+import type { CandidateLink, Fetcher, UrlAccessGuard } from "../../contracts/transient";
+import { fetchPublicSourceText } from "./fetcher";
 import { sourceDomainMatches } from "./source-url";
 
 const MAX_CANDIDATES_PER_SOURCE = 40;
@@ -13,10 +14,12 @@ export async function discoverFromHtmlPages(
   allowedPath: RegExp,
   now: Date,
   fetcher: Fetcher,
+  robots: UrlAccessGuard,
 ): Promise<CandidateLink[]> {
   const found = new Map<string, CandidateLink>();
   for (const page of pages) {
-    const response = await fetcher.fetchText(page);
+    const response = await fetchDiscoveryPage(source, page, fetcher, robots);
+    if (!response) continue;
     const $ = load(response.text);
     $("a[href]").each((_, element) => {
       const href = $(element).attr("href");
@@ -36,11 +39,13 @@ export async function discoverFromRss(
   feeds: string[],
   now: Date,
   fetcher: Fetcher,
+  robots: UrlAccessGuard,
 ): Promise<CandidateLink[]> {
   const parser = new XMLParser({ ignoreAttributes: false });
   const found = new Map<string, CandidateLink>();
   for (const feed of feeds) {
-    const response = await fetcher.fetchText(feed);
+    const response = await fetchDiscoveryPage(source, feed, fetcher, robots);
+    if (!response || XMLValidator.validate(response.text) !== true) continue;
     const parsed = parser.parse(response.text) as { rss?: { channel?: { item?: unknown | unknown[] } } };
     const rawItems = parsed.rss?.channel?.item;
     const items = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
@@ -55,6 +60,20 @@ export async function discoverFromRss(
     }
   }
   return [...found.values()].slice(0, MAX_CANDIDATES_PER_SOURCE);
+}
+
+async function fetchDiscoveryPage(
+  source: Source,
+  url: string,
+  fetcher: Fetcher,
+  robots: UrlAccessGuard,
+): Promise<{ text: string } | undefined> {
+  try {
+    return await fetchPublicSourceText(source, url, fetcher, robots);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("initial-robots-disallowed:")) return undefined;
+    throw error;
+  }
 }
 
 function candidate(source: Source, url: string, title: string, now: Date, discoveryPage: string): CandidateLink {

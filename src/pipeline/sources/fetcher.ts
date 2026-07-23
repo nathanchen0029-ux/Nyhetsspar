@@ -1,6 +1,5 @@
 import type { Source } from "../../contracts/content";
-import type { Fetcher, FetchResponse, FetchTextOptions } from "../../contracts/transient";
-import type { RobotsGuard } from "./robots";
+import type { Fetcher, FetchResponse, FetchTextOptions, UrlAccessGuard } from "../../contracts/transient";
 import { sourceDomainMatches } from "./source-url";
 
 const USER_AGENT = "Nyhetsspar/1.0 (+public educational reader; one daily fetch)";
@@ -98,7 +97,7 @@ export async function fetchPublicSourceText(
   source: Source,
   url: string,
   fetcher: Fetcher,
-  robots: RobotsGuard,
+  robots: UrlAccessGuard,
 ): Promise<FetchResponse> {
   if (!sourceDomainMatches(url, source)) {
     throw new Error("initial-source-domain-mismatch:" + source + ":" + url);

@@ -1,11 +1,9 @@
 import robotsParser from "robots-parser";
-import type { Fetcher } from "../../contracts/transient";
+import type { Fetcher, UrlAccessGuard } from "../../contracts/transient";
 
 const USER_AGENT = "Nyhetsspar";
 
-export interface RobotsGuard {
-  isAllowed(url: string): Promise<boolean>;
-}
+export interface RobotsGuard extends UrlAccessGuard {}
 
 export function createRobotsGuard(fetcher: Fetcher): RobotsGuard {
   const cache = new Map<string, ReturnType<typeof robotsParser>>();

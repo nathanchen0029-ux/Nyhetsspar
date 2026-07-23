@@ -9,4 +9,5 @@ export interface FetchTextOptions {
   redirectGuard?: (nextUrl: string) => Promise<boolean>;
 }
 export interface Fetcher { fetchText(url: string, options?: FetchTextOptions): Promise<FetchResponse>; }
-export interface SourceAdapter { source: Source; discover(now: Date, fetcher: Fetcher): Promise<CandidateLink[]>; }
+export interface UrlAccessGuard { isAllowed(url: string): Promise<boolean>; }
+export interface SourceAdapter { source: Source; discover(now: Date, fetcher: Fetcher, robots: UrlAccessGuard): Promise<CandidateLink[]>; }

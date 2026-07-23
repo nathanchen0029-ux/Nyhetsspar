@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import type { Fetcher } from "../../src/contracts/transient";
+import type { Fetcher, UrlAccessGuard } from "../../src/contracts/transient";
 import { createSourceAdapters } from "../../src/pipeline/sources/adapters";
 import { discoverFromHtmlPages, discoverFromRss } from "../../src/pipeline/sources/discovery";
 
@@ -13,6 +13,8 @@ function fixtureFetcher(fixtures: Record<string, string>): Fetcher {
     },
   };
 }
+
+const allowAll: UrlAccessGuard = { isAllowed: async () => true };
 
 describe("source adapters", () => {
   it("discovers normalized same-source HTTPS candidates in declared adapter order", async () => {
@@ -35,7 +37,9 @@ describe("source adapters", () => {
     });
 
     const adapters = createSourceAdapters();
-    const results = await Promise.all(adapters.map((adapter) => adapter.discover(new Date("2026-07-23T05:00:00Z"), fetcher)));
+    const results = await Promise.all(
+      adapters.map((adapter) => adapter.discover(new Date("2026-07-23T05:00:00Z"), fetcher, allowAll)),
+    );
 
     expect(adapters.map((adapter) => adapter.source)).toEqual(["svt", "aftonbladet", "dn"]);
     expect(results.map((items) => items[0]?.source)).toEqual(["svt", "aftonbladet", "dn"]);
@@ -65,6 +69,7 @@ describe("source adapters", () => {
       /^\/nyheter\//u,
       new Date("2026-07-23T05:00:00Z"),
       fetcher,
+      allowAll,
     );
 
     expect(candidates).toHaveLength(40);
@@ -88,8 +93,43 @@ describe("source adapters", () => {
           "</channel></rss>",
         ].join(""),
       }),
+      allowAll,
     );
 
     expect(candidates.map((candidate) => candidate.url)).toEqual(["https://www.dn.se/sverige/godkand"]);
+  });
+
+  it("does not fetch a disallowed discovery page", async () => {
+    let fetchCalls = 0;
+    const candidates = await discoverFromHtmlPages(
+      "svt",
+      ["https://www.svt.se/nyheter"],
+      /^\/nyheter\//u,
+      new Date("2026-07-23T05:00:00Z"),
+      {
+        async fetchText(url) {
+          fetchCalls += 1;
+          return { url, status: 200, headers: new Headers(), text: "<a href='/nyheter/test'>Tillräckligt lång titel</a>" };
+        },
+      },
+      { isAllowed: async () => false },
+    );
+
+    expect(candidates).toEqual([]);
+    expect(fetchCalls).toBe(0);
+  });
+
+  it("ignores a malformed RSS feed without parsing partial items", async () => {
+    const candidates = await discoverFromRss(
+      "aftonbladet",
+      ["https://rss.aftonbladet.se/feed"],
+      new Date("2026-07-23T05:00:00Z"),
+      fixtureFetcher({
+        "https://rss.aftonbladet.se/feed": "<rss><channel><item><title>Delvis artikel</title><link>https://www.aftonbladet.se/a/test</link></item>",
+      }),
+      allowAll,
+    );
+
+    expect(candidates).toEqual([]);
   });
 });
