@@ -1,4 +1,5 @@
 import { load } from "cheerio";
+import type { Source } from "../../contracts/content";
 
 export type AccessDecision =
   | { accessible: true; reason: "public" }
@@ -10,15 +11,17 @@ export type AccessDecision =
         | "paywall-marker"
         | "video-only"
         | "live-feed"
-        | "insufficient-text";
+        | "insufficient-text"
+        | "public-access-unconfirmed";
     };
 
-export function classifyAccess(html: string): AccessDecision {
+export function classifyAccess(source: Source, html: string): AccessDecision {
   const $ = load(html);
   const scripts = $("script[type=\"application/ld+json\"]")
     .map((_, element) => $(element).text())
     .get();
 
+  let explicitlyPublic = false;
   for (const raw of scripts) {
     try {
       const data: unknown = JSON.parse(raw);
@@ -35,6 +38,14 @@ export function classifyAccess(html: string): AccessDecision {
           (node as { isAccessibleForFree: unknown }).isAccessibleForFree === false
         ) {
           return { accessible: false, reason: "structured-paywall" };
+        }
+        if (
+          typeof node === "object" &&
+          node !== null &&
+          "isAccessibleForFree" in node &&
+          (node as { isAccessibleForFree: unknown }).isAccessibleForFree === true
+        ) {
+          explicitlyPublic = true;
         }
       }
     } catch {
@@ -63,6 +74,9 @@ export function classifyAccess(html: string): AccessDecision {
   }
   if (articleWordCount < 180) {
     return { accessible: false, reason: "insufficient-text" };
+  }
+  if (source !== "svt" && !explicitlyPublic) {
+    return { accessible: false, reason: "public-access-unconfirmed" };
   }
   return { accessible: true, reason: "public" };
 }

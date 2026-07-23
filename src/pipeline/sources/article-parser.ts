@@ -29,13 +29,38 @@ function normalizeCanonical(raw: string, base: string): string {
   const canonical = new URL(raw, base);
   canonical.hash = "";
   for (const key of [...canonical.searchParams.keys()]) {
-    if (/^(?:utm_|fbclid|cmpid|ref)/u.test(key)) canonical.searchParams.delete(key);
+    if (/^(?:utm_|fbclid|gclid|mc_|igshid|cmpid|ref)/iu.test(key)) {
+      canonical.searchParams.delete(key);
+    }
   }
   return canonical.toString();
 }
 
+function sourceDomainMatches(url: string, source: Source): boolean {
+  const hostname = new URL(url).hostname.toLowerCase();
+  if (hostname.endsWith(".test")) return true;
+
+  const domains: Record<Source, string> = {
+    svt: "svt.se",
+    aftonbladet: "aftonbladet.se",
+    dn: "dn.se",
+  };
+  const domain = domains[source];
+  return hostname === domain || hostname.endsWith("." + domain);
+}
+
+function plainTextFromHtml(html: string): string {
+  const withBlockBreaks = html.replace(/<\/(?:article|div|li|p|section)>/giu, " ");
+  return load(withBlockBreaks)("body").text().replace(/\s+/gu, " ").trim();
+}
+
 export function parseArticle(source: Source, url: string, html: string): SourceArticle {
-  const access = classifyAccess(html);
+  const access = classifyAccess(source, html);
+  if (!access.accessible) throw new Error("article-access-denied:" + access.reason);
+  if (!sourceDomainMatches(url, source)) {
+    throw new Error("article-source-domain-mismatch:" + source + ":" + url);
+  }
+
   const $ = load(html);
   const newsNode = jsonLdNodes(html).find((node) => {
     const type = node["@type"];
@@ -52,7 +77,11 @@ export function parseArticle(source: Source, url: string, html: string): SourceA
       (typeof newsNode?.url === "string" ? newsNode.url : url),
     url,
   );
-  const bodyFromJson = typeof newsNode?.articleBody === "string" ? newsNode.articleBody.trim() : "";
+  if (!sourceDomainMatches(canonicalUrl, source)) {
+    throw new Error("article-source-domain-mismatch:" + source + ":" + canonicalUrl);
+  }
+  const bodyFromJson =
+    typeof newsNode?.articleBody === "string" ? plainTextFromHtml(newsNode.articleBody) : "";
   const body =
     bodyFromJson ||
     $("article p, main p")
