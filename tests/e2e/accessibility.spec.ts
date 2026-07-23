@@ -2,6 +2,46 @@ import { expect, test, type Page } from "@playwright/test";
 
 const lessonPath = "data/lessons/2026-07-23-fedcba9876543210.json";
 
+function rgbChannels(color: string): [number, number, number] {
+  const hex = color.match(/^#([\da-f]{6})$/iu)?.[1];
+  if (hex) {
+    return [
+      Number.parseInt(hex.slice(0, 2), 16),
+      Number.parseInt(hex.slice(2, 4), 16),
+      Number.parseInt(hex.slice(4, 6), 16),
+    ];
+  }
+  const channels = color.match(/rgba?\(([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/iu);
+  if (!channels) {
+    throw new Error(`unsupported-color:${color}`);
+  }
+  return [
+    Number(channels[1]),
+    Number(channels[2]),
+    Number(channels[3]),
+  ];
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const luminance = (color: string) => {
+    const linearize = (channel: number) => {
+      const normalized = channel / 255;
+      return normalized <= 0.04045
+        ? normalized / 12.92
+        : ((normalized + 0.055) / 1.055) ** 2.4;
+    };
+    const [red, green, blue] = rgbChannels(color);
+    return (
+      0.2126 * linearize(red) +
+      0.7152 * linearize(green) +
+      0.0722 * linearize(blue)
+    );
+  };
+  const first = luminance(foreground);
+  const second = luminance(background);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
+
 function words(prefix: string, count: number): string {
   return Array.from({ length: count }, (_, index) => `${prefix}${index + 1}`).join(
     " ",
@@ -142,7 +182,15 @@ function article(
       },
     ],
     annotations: domestic ? annotations : [],
-    relatedCoverage: [],
+    relatedCoverage: domestic
+      ? [
+          {
+            source: "dn",
+            title: "DN följer regeringens besked",
+            url: "https://www.dn.se/sverige/regeringens-besked",
+          },
+        ]
+      : [],
     generationModel: "test-model",
     contentHash: `hash-${id}`,
   };
@@ -368,4 +416,136 @@ test("primary controls meet touch size and reduced motion removes transitions", 
     .first()
     .evaluate((element) => getComputedStyle(element).transitionDuration);
   expect(cardTransition).toBe("0s");
+});
+
+test("focus ring and control boundaries meet non-text contrast", async ({
+  page,
+}) => {
+  await openReader(page);
+  const primarySource = page.getByRole("link", { name: "阅读完整原文" });
+  await primarySource.focus();
+
+  const colors = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const sourceLink = document.activeElement as HTMLElement;
+    const button = document.querySelector(
+      ".lesson-reader button:not(.annotation)",
+    ) as HTMLElement;
+    return {
+      focusToken: root.getPropertyValue("--focus-ring").trim(),
+      controlToken: root.getPropertyValue("--control-border").trim(),
+      paper: root.getPropertyValue("--paper").trim(),
+      field: root.getPropertyValue("--field").trim(),
+      surface: root.getPropertyValue("--surface").trim(),
+      actualOutline: getComputedStyle(sourceLink).outlineColor,
+      actualButtonBorder: getComputedStyle(button).borderTopColor,
+      actualDetailsBorder: getComputedStyle(
+        document.querySelector(".summary-panel") as HTMLElement,
+      ).borderTopColor,
+    };
+  });
+
+  expect(colors.focusToken).toMatch(/^#[\da-f]{6}$/iu);
+  expect(colors.controlToken).toMatch(/^#[\da-f]{6}$/iu);
+  for (const surface of [colors.paper, colors.field, colors.surface]) {
+    expect(contrastRatio(colors.focusToken, surface)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(colors.controlToken, surface)).toBeGreaterThanOrEqual(
+      3,
+    );
+  }
+  expect(contrastRatio(colors.actualOutline, colors.paper)).toBeGreaterThanOrEqual(
+    3,
+  );
+  const actualControlBorders = [
+    colors.actualButtonBorder,
+    colors.actualDetailsBorder,
+  ];
+
+  await page.getByRole("link", { name: "历史" }).click();
+  actualControlBorders.push(
+    await page
+      .getByRole("combobox", { name: "来源" })
+      .evaluate((element) => getComputedStyle(element).borderTopColor),
+  );
+  await page.getByRole("link", { name: "已掌握" }).click();
+  actualControlBorders.push(
+    await page
+      .getByRole("searchbox", { name: "搜索瑞典语或释义" })
+      .evaluate((element) => getComputedStyle(element).borderTopColor),
+    await page
+      .getByLabel("选择 JSON 备份文件")
+      .evaluate((element) => getComputedStyle(element).borderTopColor),
+  );
+
+  for (const border of actualControlBorders) {
+    expect(contrastRatio(border, colors.field)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(border, colors.surface)).toBeGreaterThanOrEqual(3);
+  }
+});
+
+test("all visible controls keep a meaningful 44px target", async ({ page }) => {
+  const auditPage = async () => {
+    const targets = await page
+      .locator("a[href], button, summary, input, select")
+      .evaluateAll((elements) =>
+        elements
+          .filter((element) => {
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          })
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            return {
+              label:
+                element.getAttribute("aria-label") ??
+                element.textContent?.trim().slice(0, 80) ??
+                element.tagName,
+              isInlineAnnotation: element.classList.contains("annotation"),
+              height: rect.height,
+              width: rect.width,
+            };
+          }),
+      );
+
+    for (const target of targets) {
+      if (target.isInlineAnnotation) {
+        // Inline text controls may use their natural line height; one 44px
+        // dimension preserves the reading flow while maintaining a large target.
+        expect(
+          Math.max(target.height, target.width),
+          `${target.label} inline target`,
+        ).toBeGreaterThanOrEqual(44);
+      } else {
+        expect(target.height, `${target.label} target height`).toBeGreaterThanOrEqual(
+          44,
+        );
+      }
+    }
+  };
+
+  await openReader(page);
+  await auditPage();
+  await expect(page.getByRole("link", { name: "阅读完整原文" })).toHaveCSS(
+    "min-height",
+    "44px",
+  );
+  await expect(
+    page.getByRole("link", { name: /DN · DN följer regeringens besked/u }),
+  ).toHaveCSS("min-height", "44px");
+
+  await page.getByRole("link", { name: "历史" }).click();
+  await expect(page.getByRole("heading", { name: "历史课程" })).toBeVisible();
+  await auditPage();
+
+  await page.getByRole("link", { name: "已掌握" }).click();
+  await expect(
+    page.getByRole("heading", { name: "我的已掌握内容" }),
+  ).toBeVisible();
+  await auditPage();
 });

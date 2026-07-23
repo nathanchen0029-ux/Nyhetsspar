@@ -8,6 +8,8 @@
   --rule: #d3ddd6;
   --green: #1f6247;
   --green-deep: #153e31;
+  --focus-ring: #1f6247;
+  --control-border: #61766a;
   --word: #f2d66e;
   --phrase: #6399aa;
   --grammar: #a66d91;
@@ -61,7 +63,7 @@ input:focus-visible,
 select:focus-visible,
 summary:focus-visible,
 main:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--green) 58%, white);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 3px;
 }
 
@@ -403,7 +405,7 @@ h3 {
 .summary-panel {
   margin: 26px 0 34px;
   padding: 18px 20px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-m);
   background: var(--field);
 }
@@ -502,6 +504,12 @@ h3 {
   margin-top: 24px;
 }
 
+.lesson-reader > section a[target="_blank"] {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+}
+
 .annotation-rail {
   position: sticky;
   top: 88px;
@@ -551,7 +559,7 @@ h3 {
   min-width: 44px;
   min-height: 44px;
   padding: 9px 13px;
-  border: 1px solid #9eb5a8;
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-s);
   background: var(--field);
   color: var(--green-deep);
@@ -604,7 +612,7 @@ button:disabled {
   min-width: 120px;
   min-height: 44px;
   padding: 7px 32px 7px 10px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-s);
   background: var(--surface);
   color: var(--ink);
@@ -647,7 +655,7 @@ input[type="search"] {
   min-height: 46px;
   margin-top: 8px;
   padding: 10px 12px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-s);
   background: var(--surface);
   color: var(--ink);
@@ -656,6 +664,11 @@ input[type="search"] {
 input[type="file"] {
   max-width: 100%;
   min-height: 44px;
+  padding: 5px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink);
 }
 
 @media (max-width: 900px) {
