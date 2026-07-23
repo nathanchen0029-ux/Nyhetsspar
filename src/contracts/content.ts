@@ -34,6 +34,18 @@ export const AnnotationSchema = z.discriminatedUnion("kind", [VocabularyAnnotati
 export const OriginalSentenceNoteSchema = z.object({ quote: z.string().min(1), sourceUrl: z.string().url(), annotationIds: z.array(z.string()).min(1) });
 export const RelatedCoverageSchema = z.object({ source: SourceSchema, title: z.string().min(1), url: z.string().url() });
 
+const sourceDomains = {
+  svt: "svt.se",
+  aftonbladet: "aftonbladet.se",
+  dn: "dn.se",
+} as const;
+
+function matchesSourceDomain(url: string, source: Source): boolean {
+  const hostname = new URL(url).hostname.toLowerCase();
+  const domain = sourceDomains[source];
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+
 export const LessonArticleSchema = z.object({
   id: z.string().min(1), eventFingerprint: z.string().min(1), source: SourceSchema, sourceUrl: z.string().url(), sourceTitle: z.string().min(1),
   publishedAt: z.string().datetime(), scope: ScopeSchema, topic: TopicSchema, isFollowUp: z.boolean(),
@@ -42,6 +54,37 @@ export const LessonArticleSchema = z.object({
   summaries: z.object({ sv: z.string().min(1), zh: z.string().min(1), en: z.string().min(1) }), factPoints: z.array(z.string().min(1)).min(2),
   originalSentenceNotes: z.array(OriginalSentenceNoteSchema).min(2).max(4), annotations: z.array(AnnotationSchema), relatedCoverage: z.array(RelatedCoverageSchema),
   generationModel: z.string().min(1), contentHash: z.string().min(1),
+}).superRefine((article, context) => {
+  const actualWordCount = countSwedishWords(
+    article.studyParagraphs.flatMap((paragraph) => paragraph.segments.map((segment) => segment.text)).join(" "),
+  );
+  if (actualWordCount < 300 || actualWordCount > 500) {
+    context.addIssue({ code: "custom", path: ["studyParagraphs"], message: "Study text must contain 300 to 500 words." });
+  }
+  if (actualWordCount !== article.wordCount) {
+    context.addIssue({ code: "custom", path: ["wordCount"], message: "wordCount must match the study text." });
+  }
+
+  let totalQuoteWords = 0;
+  article.originalSentenceNotes.forEach((note, index) => {
+    const quoteWords = countSwedishWords(note.quote);
+    totalQuoteWords += quoteWords;
+    if (quoteWords > 25) {
+      context.addIssue({ code: "custom", path: ["originalSentenceNotes", index, "quote"], message: "Each quote may contain at most 25 words." });
+    }
+  });
+  if (totalQuoteWords > 80) {
+    context.addIssue({ code: "custom", path: ["originalSentenceNotes"], message: "Quotes may contain at most 80 words in total." });
+  }
+
+  if (!matchesSourceDomain(article.sourceUrl, article.source)) {
+    context.addIssue({ code: "custom", path: ["sourceUrl"], message: "Source URL domain must match source." });
+  }
+  article.relatedCoverage.forEach((coverage, index) => {
+    if (!matchesSourceDomain(coverage.url, coverage.source)) {
+      context.addIssue({ code: "custom", path: ["relatedCoverage", index, "url"], message: "Related coverage URL domain must match source." });
+    }
+  });
 });
 
 export const DailyLessonSchema = z.object({
