@@ -1,4 +1,11 @@
 {
   "schemaVersion": 1,
-  "dates": []
+  "dates": [
+    {
+      "date": "2026-07-24",
+      "status": "delayed",
+      "lessonPath": "data/lessons/2026-07-24-0a0bf9fd076f7506.json",
+      "articles": []
+    }
+  ]
 }
