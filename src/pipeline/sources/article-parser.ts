@@ -3,40 +3,34 @@ import { load } from "cheerio";
 import type { Source } from "../../contracts/content";
 import type { SourceArticle } from "../../contracts/transient";
 import { classifyAccess } from "./access";
-import { isNewsArticle, jsonLdNodes, plainTextFromHtml } from "./json-ld";
+import {
+  canonicalUrlFromHtml,
+  jsonLdNodes,
+  normalizeArticleUrl,
+  plainTextFromHtml,
+  selectCurrentArticleNode,
+} from "./json-ld";
 import { sourceDomainMatches } from "./source-url";
 
-function normalizeCanonical(raw: string, base: string): string {
-  const canonical = new URL(raw, base);
-  canonical.hash = "";
-  for (const key of [...canonical.searchParams.keys()]) {
-    if (/^(?:utm_|fbclid|gclid|mc_|igshid|cmpid|ref)/iu.test(key)) {
-      canonical.searchParams.delete(key);
-    }
-  }
-  return canonical.toString();
-}
-
 export function parseArticle(source: Source, url: string, html: string): SourceArticle {
-  const access = classifyAccess(source, html);
+  const bindingCanonicalUrl = canonicalUrlFromHtml(html, url) ?? normalizeArticleUrl(url, url);
+  const access = classifyAccess(source, url, html, bindingCanonicalUrl);
   if (!access.accessible) throw new Error("article-access-denied:" + access.reason);
   if (!sourceDomainMatches(url, source)) {
     throw new Error("article-source-domain-mismatch:" + source + ":" + url);
   }
 
   const $ = load(html);
-  const newsNode = jsonLdNodes(html).find(isNewsArticle);
+  const newsNode = selectCurrentArticleNode(jsonLdNodes(html), url, bindingCanonicalUrl);
   const title =
     (typeof newsNode?.headline === "string" ? newsNode.headline : undefined) ??
     $("h1").first().text().trim();
   const publishedAt =
     (typeof newsNode?.datePublished === "string" ? newsNode.datePublished : undefined) ??
     $("time[datetime]").first().attr("datetime");
-  const canonicalUrl = normalizeCanonical(
-    $("link[rel=\"canonical\"]").attr("href") ??
-      (typeof newsNode?.url === "string" ? newsNode.url : url),
-    url,
-  );
+  const canonicalUrl =
+    canonicalUrlFromHtml(html, url) ??
+    (typeof newsNode?.url === "string" ? normalizeArticleUrl(newsNode.url, url) : normalizeArticleUrl(url, url));
   if (!sourceDomainMatches(canonicalUrl, source)) {
     throw new Error("article-source-domain-mismatch:" + source + ":" + canonicalUrl);
   }

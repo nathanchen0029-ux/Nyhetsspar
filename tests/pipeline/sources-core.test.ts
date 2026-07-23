@@ -17,7 +17,7 @@ describe("source safety core", () => {
 
   it("rejects an explicit paywall", async () => {
     const html = await readFile("tests/fixtures/sources/paywalled-article.html", "utf8");
-    expect(classifyAccess("svt", html)).toEqual({
+    expect(classifyAccess("svt", "https://www.svt.se/nyheter/låst", html)).toEqual({
       accessible: false,
       reason: "structured-paywall",
     });
@@ -29,7 +29,7 @@ describe("source safety core", () => {
     ["live-feed.html", "live-feed"],
   ])("rejects unstable or restricted text in %s", async (fixture, reason) => {
     const html = await readFile(`tests/fixtures/sources/${fixture}`, "utf8");
-    expect(classifyAccess("svt", html)).toEqual({ accessible: false, reason });
+    expect(classifyAccess("svt", "https://www.svt.se/nyheter/test", html)).toEqual({ accessible: false, reason });
   });
 
   it("retries transient responses exactly twice", async () => {
@@ -65,7 +65,7 @@ describe("source safety core", () => {
         '"isAccessibleForFree": true',
         '"section": "nyheter"',
       );
-      expect(classifyAccess(source, html)).toEqual({
+      expect(classifyAccess(source, "https://www." + source + ".se/nyheter/test", html)).toEqual({
         accessible: false,
         reason: "public-access-unconfirmed",
       });
@@ -74,7 +74,7 @@ describe("source safety core", () => {
 
   it("accepts stable public SVT text without JSON-LD access confirmation", () => {
     const html = "<main><article><p>" + "stabil offentlig text ".repeat(180) + "</p></article></main>";
-    expect(classifyAccess("svt", html)).toEqual({ accessible: true, reason: "public" });
+    expect(classifyAccess("svt", "https://www.svt.se/nyheter/test", html)).toEqual({ accessible: true, reason: "public" });
   });
 
   it("throws a safety error instead of returning a restricted article body", async () => {
@@ -123,7 +123,7 @@ describe("source safety core", () => {
       '"isAccessibleForFree":true,',
       "",
     );
-    expect(classifyAccess("dn", html)).toEqual({
+    expect(classifyAccess("dn", "https://www.dn.se/nyheter/test", html)).toEqual({
       accessible: false,
       reason: "public-access-unconfirmed",
     });
@@ -212,6 +212,37 @@ describe("source safety core", () => {
       "article-source-domain-mismatch",
     );
   });
+
+  it("does not accept a related NewsArticle public flag for the current DN page", () => {
+    const html = multiArticleHtml({
+      relatedAccessible: true,
+    });
+    expect(classifyAccess("dn", "https://www.dn.se/nyheter/current", html)).toEqual({
+      accessible: false,
+      reason: "public-access-unconfirmed",
+    });
+  });
+
+  it("uses the URL-matched current NewsArticle when related coverage appears first", () => {
+    const result = parseArticle("dn", "https://www.dn.se/nyheter/current", multiArticleHtml({
+      currentAccessible: true,
+      relatedAccessible: true,
+    }));
+    expect(result.title).toBe("Aktuell rubrik");
+    expect(result.body).toContain("Aktuell brödtext");
+    expect(result.body).not.toContain("Relaterad brödtext");
+  });
+
+  it("fails closed for DN when multiple NewsArticles cannot be uniquely bound", () => {
+    const html = multiArticleHtml({
+      relatedAccessible: true,
+      unmatched: true,
+    });
+    expect(classifyAccess("dn", "https://www.dn.se/nyheter/current", html)).toEqual({
+      accessible: false,
+      reason: "public-access-unconfirmed",
+    });
+  });
 });
 
 function newsHtml(options: { articleBody?: string; canonical?: string; extraJsonLd?: string } = {}): string {
@@ -227,5 +258,37 @@ function newsHtml(options: { articleBody?: string; canonical?: string; extraJson
     "</head><body><main><article><p>",
     "stabil offentlig text ".repeat(180),
     "</p></article></main></body></html>",
+  ].join("");
+}
+
+function multiArticleHtml(options: {
+  currentAccessible?: boolean;
+  relatedAccessible?: boolean;
+  unmatched?: boolean;
+}): string {
+  const currentUrl = options.unmatched ? "https://www.dn.se/nyheter/other" : "https://www.dn.se/nyheter/current";
+  const current = {
+    "@type": "NewsArticle",
+    url: currentUrl,
+    headline: "Aktuell rubrik",
+    datePublished: "2026-07-23T04:00:00Z",
+    articleBody: "Aktuell brödtext ".repeat(180),
+  } as Record<string, unknown>;
+  const related = {
+    "@type": "NewsArticle",
+    url: "https://www.dn.se/nyheter/related",
+    headline: "Relaterad rubrik",
+    datePublished: "2026-07-22T04:00:00Z",
+    articleBody: "Relaterad brödtext ".repeat(180),
+  } as Record<string, unknown>;
+  if (options.currentAccessible !== undefined) current.isAccessibleForFree = options.currentAccessible;
+  if (options.relatedAccessible !== undefined) related.isAccessibleForFree = options.relatedAccessible;
+  return [
+    '<link rel="canonical" href="https://www.dn.se/nyheter/current" />',
+    '<script type="application/ld+json">',
+    JSON.stringify([related, current]),
+    "</script><main><article><p>",
+    "DOM text ".repeat(180),
+    "</p></article></main>",
   ].join("");
 }

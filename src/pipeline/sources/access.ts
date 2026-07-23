@@ -1,6 +1,6 @@
 import { load } from "cheerio";
 import type { Source } from "../../contracts/content";
-import { isNewsArticle, jsonLdNodes, plainTextFromHtml } from "./json-ld";
+import { jsonLdNodes, plainTextFromHtml, selectCurrentArticleNode } from "./json-ld";
 
 export type AccessDecision =
   | { accessible: true; reason: "public" }
@@ -16,16 +16,12 @@ export type AccessDecision =
         | "public-access-unconfirmed";
     };
 
-export function classifyAccess(source: Source, html: string): AccessDecision {
+export function classifyAccess(source: Source, url: string, html: string, canonicalUrl = url): AccessDecision {
   const $ = load(html);
   const nodes = jsonLdNodes(html);
-  let explicitlyPublic = false;
   for (const node of nodes) {
     if (node.isAccessibleForFree === false) {
       return { accessible: false, reason: "structured-paywall" };
-    }
-    if (isNewsArticle(node) && node.isAccessibleForFree === true) {
-      explicitlyPublic = true;
     }
   }
 
@@ -41,7 +37,8 @@ export function classifyAccess(source: Source, html: string): AccessDecision {
     .map((_, element) => $(element).text().trim())
     .get()
     .join(" ");
-  const articleNode = nodes.find(isNewsArticle);
+  const articleNode = selectCurrentArticleNode(nodes, url, canonicalUrl);
+  const explicitlyPublic = articleNode?.isAccessibleForFree === true;
   const jsonBody = typeof articleNode?.articleBody === "string" ? plainTextFromHtml(articleNode.articleBody) : "";
   const stableText = wordCount(jsonBody) >= 180 ? jsonBody : articleText;
   const articleWordCount = wordCount(stableText);
