@@ -1,5 +1,6 @@
 import { load } from "cheerio";
 import type { Source } from "../../contracts/content";
+import { isNewsArticle, jsonLdNodes, plainTextFromHtml } from "./json-ld";
 
 export type AccessDecision =
   | { accessible: true; reason: "public" }
@@ -17,39 +18,14 @@ export type AccessDecision =
 
 export function classifyAccess(source: Source, html: string): AccessDecision {
   const $ = load(html);
-  const scripts = $("script[type=\"application/ld+json\"]")
-    .map((_, element) => $(element).text())
-    .get();
-
+  const nodes = jsonLdNodes(html);
   let explicitlyPublic = false;
-  for (const raw of scripts) {
-    try {
-      const data: unknown = JSON.parse(raw);
-      const nodes = Array.isArray(data)
-        ? data
-        : typeof data === "object" && data !== null && "@graph" in data
-          ? (data as { "@graph": unknown[] })["@graph"]
-          : [data];
-      for (const node of nodes) {
-        if (
-          typeof node === "object" &&
-          node !== null &&
-          "isAccessibleForFree" in node &&
-          (node as { isAccessibleForFree: unknown }).isAccessibleForFree === false
-        ) {
-          return { accessible: false, reason: "structured-paywall" };
-        }
-        if (
-          typeof node === "object" &&
-          node !== null &&
-          "isAccessibleForFree" in node &&
-          (node as { isAccessibleForFree: unknown }).isAccessibleForFree === true
-        ) {
-          explicitlyPublic = true;
-        }
-      }
-    } catch {
-      continue;
+  for (const node of nodes) {
+    if (node.isAccessibleForFree === false) {
+      return { accessible: false, reason: "structured-paywall" };
+    }
+    if (isNewsArticle(node) && node.isAccessibleForFree === true) {
+      explicitlyPublic = true;
     }
   }
 
@@ -65,7 +41,10 @@ export function classifyAccess(source: Source, html: string): AccessDecision {
     .map((_, element) => $(element).text().trim())
     .get()
     .join(" ");
-  const articleWordCount = articleText.split(/\s+/u).filter(Boolean).length;
+  const articleNode = nodes.find(isNewsArticle);
+  const jsonBody = typeof articleNode?.articleBody === "string" ? plainTextFromHtml(articleNode.articleBody) : "";
+  const stableText = wordCount(jsonBody) >= 180 ? jsonBody : articleText;
+  const articleWordCount = wordCount(stableText);
   if ($("video").length > 0 && articleWordCount < 80) {
     return { accessible: false, reason: "video-only" };
   }
@@ -79,4 +58,8 @@ export function classifyAccess(source: Source, html: string): AccessDecision {
     return { accessible: false, reason: "public-access-unconfirmed" };
   }
   return { accessible: true, reason: "public" };
+}
+
+function wordCount(text: string): number {
+  return text.split(/\s+/u).filter(Boolean).length;
 }

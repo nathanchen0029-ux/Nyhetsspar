@@ -3,27 +3,8 @@ import { load } from "cheerio";
 import type { Source } from "../../contracts/content";
 import type { SourceArticle } from "../../contracts/transient";
 import { classifyAccess } from "./access";
-
-function jsonLdNodes(html: string): Record<string, unknown>[] {
-  const $ = load(html);
-  const nodes: Record<string, unknown>[] = [];
-  $("script[type=\"application/ld+json\"]").each((_, element) => {
-    try {
-      const parsed: unknown = JSON.parse($(element).text());
-      const values = Array.isArray(parsed)
-        ? parsed
-        : typeof parsed === "object" && parsed !== null && "@graph" in parsed
-          ? (parsed as { "@graph": unknown[] })["@graph"]
-          : [parsed];
-      for (const value of values) {
-        if (typeof value === "object" && value !== null) nodes.push(value as Record<string, unknown>);
-      }
-    } catch {
-      return;
-    }
-  });
-  return nodes;
-}
+import { isNewsArticle, jsonLdNodes, plainTextFromHtml } from "./json-ld";
+import { sourceDomainMatches } from "./source-url";
 
 function normalizeCanonical(raw: string, base: string): string {
   const canonical = new URL(raw, base);
@@ -36,24 +17,6 @@ function normalizeCanonical(raw: string, base: string): string {
   return canonical.toString();
 }
 
-function sourceDomainMatches(url: string, source: Source): boolean {
-  const hostname = new URL(url).hostname.toLowerCase();
-  if (hostname.endsWith(".test")) return true;
-
-  const domains: Record<Source, string> = {
-    svt: "svt.se",
-    aftonbladet: "aftonbladet.se",
-    dn: "dn.se",
-  };
-  const domain = domains[source];
-  return hostname === domain || hostname.endsWith("." + domain);
-}
-
-function plainTextFromHtml(html: string): string {
-  const withBlockBreaks = html.replace(/<\/(?:article|div|li|p|section)>/giu, " ");
-  return load(withBlockBreaks)("body").text().replace(/\s+/gu, " ").trim();
-}
-
 export function parseArticle(source: Source, url: string, html: string): SourceArticle {
   const access = classifyAccess(source, html);
   if (!access.accessible) throw new Error("article-access-denied:" + access.reason);
@@ -62,10 +25,7 @@ export function parseArticle(source: Source, url: string, html: string): SourceA
   }
 
   const $ = load(html);
-  const newsNode = jsonLdNodes(html).find((node) => {
-    const type = node["@type"];
-    return type === "NewsArticle" || (Array.isArray(type) && type.includes("NewsArticle"));
-  });
+  const newsNode = jsonLdNodes(html).find(isNewsArticle);
   const title =
     (typeof newsNode?.headline === "string" ? newsNode.headline : undefined) ??
     $("h1").first().text().trim();
@@ -82,15 +42,15 @@ export function parseArticle(source: Source, url: string, html: string): SourceA
   }
   const bodyFromJson =
     typeof newsNode?.articleBody === "string" ? plainTextFromHtml(newsNode.articleBody) : "";
-  const body =
-    bodyFromJson ||
-    $("article p, main p")
+  const bodyFromDom = $("article p, main p")
       .map((_, element) => $(element).text().replace(/\s+/gu, " ").trim())
       .get()
       .filter((paragraph) => paragraph.length >= 30)
       .join("\n\n");
+  const body = wordCount(bodyFromJson) >= 180 ? bodyFromJson : bodyFromDom;
 
-  if (!title || !publishedAt || !body) throw new Error(`article-parse-incomplete:${source}:${url}`);
+  if (!title || !publishedAt) throw new Error(`article-parse-incomplete:${source}:${url}`);
+  if (wordCount(body) < 180) throw new Error("article-body-insufficient:" + source + ":" + url);
 
   return {
     id: createHash("sha256").update(canonicalUrl).digest("hex").slice(0, 16),
@@ -103,4 +63,8 @@ export function parseArticle(source: Source, url: string, html: string): SourceA
     contentHash: `sha256:${createHash("sha256").update(body).digest("hex")}`,
     isAccessibleForFree: access.accessible,
   };
+}
+
+function wordCount(text: string): number {
+  return text.split(/\s+/u).filter(Boolean).length;
 }
