@@ -58,9 +58,12 @@ function candidateQueue(
     const batch = select(remaining, ledger, 3);
     if (batch.length === 0) break;
     ordered.push(...batch);
-    const selected = new Set(batch.map((item) => item.article.id));
+    const selectedIds = new Set(batch.map((item) => item.article.id));
+    const selectedUrls = new Set(batch.map((item) => item.article.canonicalUrl));
     for (let index = remaining.length - 1; index >= 0; index -= 1) {
-      if (selected.has(remaining[index]!.article.id)) remaining.splice(index, 1);
+      if (selectedIds.has(remaining[index]!.article.id) || selectedUrls.has(remaining[index]!.article.canonicalUrl)) {
+        remaining.splice(index, 1);
+      }
     }
   }
   return ordered;
@@ -116,15 +119,38 @@ export async function runDailyPipeline(options: RunOptions): Promise<DailyLesson
   // The current date is therefore rebuilt deterministically on every rerun.
   const ledger = { ...persistedLedger, days: persistedLedger.days.filter((day) => day.date !== date) };
   const deduplicated = await deduplicate(articles, ledger, options.gateway);
+  const queue = candidateQueue(deduplicated, ledger, select);
+  const domesticQueue = queue.filter((item) => item.fingerprint.scope !== "international");
+  const internationalQueue = queue.filter((item) => item.fingerprint.scope === "international");
   const generated: Array<{ selected: FingerprintedArticle; lesson: LessonArticle }> = [];
-  for (const selected of candidateQueue(deduplicated, ledger, select)) {
-    if (generated.length === 3) break;
+  const attempted = new Set<string>();
+  const generateOne = async (selected: FingerprintedArticle): Promise<boolean> => {
+    attempted.add(selected.article.id);
     try {
       const cached = await repository.findCachedLesson(selected.article.canonicalUrl, selected.article.contentHash);
       const lesson = cached ?? await generate(selected, options.gateway);
       generated.push({ selected, lesson });
+      return true;
     } catch {
       // Do not log model output or source text; deterministic fallback candidates remain eligible.
+      return false;
+    }
+  };
+  const firstSuccessful = async (items: FingerprintedArticle[]): Promise<boolean> => {
+    for (const item of items) {
+      if (await generateOne(item)) return true;
+    }
+    return false;
+  };
+
+  if (domesticQueue.length > 0 && internationalQueue.length > 0) {
+    const domesticReady = await firstSuccessful(domesticQueue);
+    const internationalReady = domesticReady && await firstSuccessful(internationalQueue);
+    if (domesticReady && internationalReady) {
+      for (const item of queue) {
+        if (generated.length === 3) break;
+        if (!attempted.has(item.article.id) && await generateOne(item)) break;
+      }
     }
   }
 

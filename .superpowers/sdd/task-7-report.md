@@ -31,3 +31,18 @@ Implemented Task 7 and prepared it for commit.
 ## Concerns
 
 None known. Cross-file atomicity intentionally uses the public index as the visibility boundary; a process crash before that boundary may leave new internal ledger/cache files, which the next run repairs by rebuilding the current day's ledger entry.
+
+## P1 review remediation
+
+- Generation now establishes one successful domestic lesson and one successful international lesson before it considers an optional third. Failed international candidates continue through international backups even when a domestic candidate appears first in the global fallback order; when either category is absent, it publishes delayed without spending generation calls on a one-sided queue.
+- `DailyLessonSchema` and the derived index enforce delayed-empty and ready 2–3 domestic-plus-international coverage. Index entries carry a strict, date-matched public `lessonPath`.
+- Publication uses an immutable, content-hashed `public/data/lessons/YYYY-MM-DD-<sha256-16>.json` path. Cache records bind to that path and publication rejects any cache metadata that does not exactly match a selected lesson article before it writes a journal.
+- A strict `data/pending-publication.json` is written before internal files, verified against its current-date index entry, and is rolled forward by every repository entry point. An index failure leaves the previous public index and its immutable lesson version unchanged; a clean repository instance completes the pending commit and removes the journal.
+- Tests cover same-date and first-date index failures, public-path visibility (with no root `data/lessons` output), invalid cache/lesson publication with no final files, and journal path tampering.
+
+### P1 verification
+
+- Focused pipeline/contracts/source/selection/lesson suite: 80 passed.
+- TypeScript: `pnpm exec tsc --noEmit` — passed.
+- Full suite: 96 passed across 8 files.
+- `git diff --check` — passed.

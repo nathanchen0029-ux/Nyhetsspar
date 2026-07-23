@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -68,7 +68,7 @@ function lessonFor(article: SourceArticle, selected: FingerprintedArticle): Less
   };
 }
 
-function gateway(failIds = new Set<string>()) {
+function gateway(failIds = new Set<string>(), generationCalls?: string[]) {
   return {
     async fingerprint(articles: SourceArticle[]) {
       return articles.map((article) => ({
@@ -87,10 +87,27 @@ function gateway(failIds = new Set<string>()) {
       return pairs.map((pair) => ({ pairId: pair.pairId, sameEvent: false, confidence: 0, reason: "different", materialUpdate: false }));
     },
     async generateLesson(input: { article: SourceArticle; fingerprint: FingerprintedArticle["fingerprint"] }) {
+      generationCalls?.push(input.article.id);
       if (failIds.has(input.article.id)) throw new Error("generation-failed");
       return lessonFor(input.article, { article: input.article, fingerprint: input.fingerprint, related: [], isFollowUp: false });
     },
     async verifyLessonFacts() {},
+  };
+}
+
+function readyLesson(date: string, suffix = "old"): DailyLesson {
+  const domestic = sourceArticle(`domestic-${suffix}`, "svt", "sweden");
+  const international = sourceArticle(`international-${suffix}`, "dn", "international");
+  const selection = (article: SourceArticle, scope: "sweden" | "international"): FingerprintedArticle => ({
+    article,
+    fingerprint: { candidateId: article.id, who: ["myndigheten"], action: "rapporterar", where: scope, when: date, outcome: "utfall", scope, topic: "daily-life", canonical: `event-${article.id}` },
+    related: [],
+    isFollowUp: false,
+  });
+  return {
+    schemaVersion: 1, date, timezone: "Europe/Stockholm", generatedAt: NOW.toISOString(), status: "ready",
+    sourceHealth: { svt: "ok", aftonbladet: "ok", dn: "ok" }, selectionSummary: "Ready lesson.",
+    articles: [lessonFor(domestic, selection(domestic, "sweden")), lessonFor(international, selection(international, "international"))],
   };
 }
 
@@ -152,10 +169,7 @@ describe("daily pipeline infrastructure", () => {
   it("skips an already-ready Stockholm date", async () => {
     const directory = await root();
     const repository = new FileRepository(directory);
-    const existing: DailyLesson = {
-      schemaVersion: 1, date: "2026-07-23", timezone: "Europe/Stockholm", generatedAt: NOW.toISOString(), status: "ready",
-      sourceHealth: { svt: "ok", aftonbladet: "ok", dn: "ok" }, selectionSummary: "Existing lesson.", articles: [],
-    };
+    const existing = readyLesson("2026-07-23");
     await repository.publishDaily({ lesson: existing });
     const { dependencies, redirects } = ports([sourceArticle("sv-1", "svt", "sweden")]);
     await expect(runDailyPipeline({ root: directory, now: NOW, gateway: gateway(), dependencies })).resolves.toBeNull();
@@ -170,13 +184,15 @@ describe("daily pipeline infrastructure", () => {
     expect(result?.status).toBe("ready");
     expect(result?.articles).toHaveLength(2);
     expect(redirects).toEqual(expect.arrayContaining(articles.map((article) => article.url)));
+    const lessonPath = (JSON.parse(await readFile(join(directory, "public/data/index.json"), "utf8")) as { dates: Array<{ lessonPath: string }> }).dates[0]!.lessonPath;
     const persisted = await Promise.all([
       readFile(join(directory, "public/data/index.json"), "utf8"),
-      readFile(join(directory, "public/data/lessons/2026-07-23.json"), "utf8"),
+      readFile(join(directory, "public", lessonPath), "utf8"),
       readFile(join(directory, "data/editorial-ledger.json"), "utf8"),
       readFile(join(directory, "data/cache/index.json"), "utf8"),
     ]);
     expect(persisted.join("\n")).not.toContain(BODY);
+    await expect(readFile(join(directory, lessonPath), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("publishes delayed with no articles and leaves ledger/cache untouched when coverage is insufficient", async () => {
@@ -202,6 +218,39 @@ describe("daily pipeline infrastructure", () => {
     expect(result?.articles.map((article) => article.id)).toEqual(expect.arrayContaining(["lesson-b-sweden", "lesson-c-world"]));
   });
 
+  it("tries an international backup before an additional domestic candidate", async () => {
+    const directory = await root();
+    const articles = [
+      sourceArticle("a-domestic", "svt", "sweden"),
+      sourceArticle("b-international-fails", "dn", "international"),
+      sourceArticle("c-domestic", "aftonbladet", "sweden"),
+      sourceArticle("d-international", "dn", "international"),
+    ];
+    const { dependencies } = ports(articles);
+    const calls: string[] = [];
+    const result = await runDailyPipeline({
+      root: directory,
+      now: NOW,
+      gateway: gateway(new Set(["b-international-fails"]), calls),
+      dependencies: { ...dependencies, selectDailyArticles: (items) => [...items].sort((left, right) => left.article.id.localeCompare(right.article.id)).slice(0, 3) },
+    });
+    expect(result?.status).toBe("ready");
+    expect(calls).toEqual(["a-domestic", "b-international-fails", "d-international", "c-domestic"]);
+  });
+
+  it("does not generate a queue of domestic articles when no international candidate exists", async () => {
+    const directory = await root();
+    const calls: string[] = [];
+    const { dependencies } = ports([
+      sourceArticle("a-domestic", "svt", "sweden"),
+      sourceArticle("b-domestic", "aftonbladet", "sweden"),
+      sourceArticle("c-domestic", "svt", "sweden"),
+    ]);
+    const result = await runDailyPipeline({ root: directory, now: NOW, gateway: gateway(new Set(), calls), dependencies });
+    expect(result?.status).toBe("delayed");
+    expect(calls).toEqual([]);
+  });
+
   it("ignores a stale ledger record for the current date before selecting a rerun", async () => {
     const directory = await root();
     const repository = new FileRepository(directory);
@@ -222,23 +271,86 @@ describe("daily pipeline infrastructure", () => {
     expect((await repository.loadLedger()).days).toHaveLength(1);
   });
 
-  it("rejects extra cache fields and keeps the old public index when the final rename fails", async () => {
+  it("rejects extra cache fields and invalid lesson states before writing final files", async () => {
     const directory = await root();
     const repository = new FileRepository(directory);
-    await repository.saveCacheEntry({ canonicalUrl: "https://www.svt.se/a", contentHash: "sha256:a", lessonDate: "2026-07-23", lessonId: "a" });
+    await repository.saveCacheEntry({ canonicalUrl: "https://www.svt.se/a", contentHash: "sha256:a", lessonDate: "2026-07-23", lessonId: "a", lessonPath: "data/lessons/2026-07-23-0123456789abcdef.json" });
     const cachePath = join(directory, "data/cache/index.json");
     const raw = JSON.parse(await readFile(cachePath, "utf8")) as { entries: unknown[] };
     raw.entries.push({ canonicalUrl: "https://www.svt.se/b", contentHash: "sha256:b", lessonDate: "2026-07-23", lessonId: "b", body: "must reject" });
-    await import("node:fs/promises").then(({ writeFile }) => writeFile(cachePath, JSON.stringify(raw), "utf8"));
+    await writeFile(cachePath, JSON.stringify(raw), "utf8");
     await expect(repository.findCachedLesson("https://www.svt.se/b", "sha256:b")).rejects.toThrow();
+    const invalid: DailyLesson = {
+      schemaVersion: 1, date: "2026-07-23", timezone: "Europe/Stockholm", generatedAt: NOW.toISOString(), status: "ready",
+      sourceHealth: { svt: "ok", aftonbladet: "ok", dn: "ok" }, selectionSummary: "Invalid.", articles: [],
+    };
+    const invalidDirectory = await root();
+    await expect(new FileRepository(invalidDirectory).publishDaily({ lesson: invalid })).rejects.toThrow();
+    await expect(readFile(join(invalidDirectory, "public/data/index.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    const cacheInvalidDirectory = await root();
+    const valid = readyLesson("2026-07-23", "cache-invalid");
+    await expect(new FileRepository(cacheInvalidDirectory).publishDaily({
+      lesson: valid,
+      cacheEntries: [{ canonicalUrl: valid.articles[0]!.sourceUrl, contentHash: valid.articles[0]!.contentHash, lessonDate: "2026-07-22", lessonId: valid.articles[0]!.id }],
+    })).rejects.toThrow("cache-entry-does-not-match-published-lesson");
+    await expect(readFile(join(cacheInvalidDirectory, "public/data/index.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
 
-    const old: DailyLesson = { schemaVersion: 1, date: "2026-07-22", timezone: "Europe/Stockholm", generatedAt: NOW.toISOString(), status: "delayed", sourceHealth: { svt: "ok", aftonbladet: "ok", dn: "ok" }, selectionSummary: "Old.", articles: [] };
-    await repository.publishDaily({ lesson: old });
+  it("keeps the old same-date version visible until a pending publication rolls forward", async () => {
+    const directory = await root();
+    const old = readyLesson("2026-07-23", "old");
+    const repository = new FileRepository(directory);
+    await repository.publishDaily({ lesson: old, ledger: { schemaVersion: 1, days: [] }, cacheEntries: [] });
     const originalIndex = await readFile(join(directory, "public/data/index.json"), "utf8");
+    const oldPath = (JSON.parse(originalIndex) as { dates: Array<{ lessonPath: string }> }).dates[0]!.lessonPath;
+    const originalLesson = await readFile(join(directory, "public", oldPath), "utf8");
+
+    const replacement = readyLesson("2026-07-23", "new");
     const failing = new FileRepository(directory, { beforeRename: (path) => { if (path.endsWith("public/data/index.json")) throw new Error("index-failpoint"); } });
-    const replacement = { ...old, date: "2026-07-23", selectionSummary: "Replacement." };
-    await expect(failing.publishDaily({ lesson: replacement })).rejects.toThrow("index-failpoint");
+    await expect(failing.publishDaily({
+      lesson: replacement,
+      ledger: { schemaVersion: 1, days: [] },
+      cacheEntries: replacement.articles.map((article) => ({ canonicalUrl: article.sourceUrl, contentHash: article.contentHash, lessonDate: replacement.date, lessonId: article.id })),
+    })).rejects.toThrow("index-failpoint");
     await expect(readFile(join(directory, "public/data/index.json"), "utf8")).resolves.toBe(originalIndex);
-    expect(JSON.parse(await readFile(join(directory, "public/data/lessons/2026-07-23.json"), "utf8"))).toMatchObject({ date: "2026-07-23" });
+    await expect(readFile(join(directory, "public", oldPath), "utf8")).resolves.toBe(originalLesson);
+    await expect(readFile(join(directory, "data/pending-publication.json"), "utf8")).resolves.toContain("lessonPath");
+
+    const recovered = new FileRepository(directory);
+    await expect(recovered.lessonExists("2026-07-23")).resolves.toBe(true);
+    const newIndex = JSON.parse(await readFile(join(directory, "public/data/index.json"), "utf8")) as { dates: Array<{ lessonPath: string }> };
+    expect(newIndex.dates[0]!.lessonPath).not.toBe(oldPath);
+    expect((await recovered.loadLesson("2026-07-23"))?.articles[0]?.id).toBe("lesson-domestic-new");
+    const cache = JSON.parse(await readFile(join(directory, "data/cache/index.json"), "utf8")) as { entries: Array<{ lessonPath: string }> };
+    expect(cache.entries.every((entry) => entry.lessonPath === newIndex.dates[0]!.lessonPath)).toBe(true);
+    await expect(readFile(join(directory, "data/pending-publication.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rolls forward a first-date publication left pending before the public index", async () => {
+    const directory = await root();
+    const lesson = readyLesson("2026-07-23", "first");
+    const failing = new FileRepository(directory, { beforeRename: (path) => { if (path.endsWith("public/data/index.json")) throw new Error("index-failpoint"); } });
+    await expect(failing.publishDaily({ lesson })).rejects.toThrow("index-failpoint");
+    await expect(readFile(join(directory, "public/data/index.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    const recovered = new FileRepository(directory);
+    const index = await recovered.loadIndex();
+    expect(index.dates[0]?.date).toBe("2026-07-23");
+    await expect(readFile(join(directory, "public", index.dates[0]!.lessonPath), "utf8")).resolves.toContain("domestic-first");
+  });
+
+  it("rejects a pending journal whose current-date index points to another lesson version", async () => {
+    const directory = await root();
+    const old = readyLesson("2026-07-23", "journal-old");
+    await new FileRepository(directory).publishDaily({ lesson: old });
+    const originalIndex = await readFile(join(directory, "public/data/index.json"), "utf8");
+    const oldPath = (JSON.parse(originalIndex) as { dates: Array<{ lessonPath: string }> }).dates[0]!.lessonPath;
+    const failing = new FileRepository(directory, { beforeRename: (path) => { if (path.endsWith("public/data/index.json")) throw new Error("index-failpoint"); } });
+    await expect(failing.publishDaily({ lesson: readyLesson("2026-07-23", "journal-new") })).rejects.toThrow("index-failpoint");
+    const journalPath = join(directory, "data/pending-publication.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8")) as { index: { dates: Array<{ date: string; lessonPath: string }> } };
+    journal.index.dates.find((entry) => entry.date === "2026-07-23")!.lessonPath = oldPath;
+    await writeFile(journalPath, JSON.stringify(journal), "utf8");
+    await expect(new FileRepository(directory).lessonExists("2026-07-23")).rejects.toThrow();
+    await expect(readFile(join(directory, "public/data/index.json"), "utf8")).resolves.toBe(originalIndex);
   });
 });

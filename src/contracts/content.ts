@@ -97,6 +97,20 @@ export const LessonArticleSchema = z.object({
 export const DailyLessonSchema = z.object({
   schemaVersion: z.literal(1), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u), timezone: z.literal("Europe/Stockholm"), generatedAt: z.string().datetime(), status: z.enum(["ready", "delayed"]),
   sourceHealth: z.object({ svt: SourceHealthSchema, aftonbladet: SourceHealthSchema, dn: SourceHealthSchema }), selectionSummary: z.string().min(1), articles: z.array(LessonArticleSchema).max(3),
+}).superRefine((lesson, context) => {
+  if (lesson.status === "delayed" && lesson.articles.length !== 0) {
+    context.addIssue({ code: "custom", path: ["articles"], message: "Delayed lessons must not contain articles." });
+  }
+  if (lesson.status === "ready") {
+    if (lesson.articles.length < 2) {
+      context.addIssue({ code: "custom", path: ["articles"], message: "Ready lessons need two or three articles." });
+    }
+    const domestic = lesson.articles.some((article) => article.scope !== "international");
+    const international = lesson.articles.some((article) => article.scope === "international");
+    if (!domestic || !international) {
+      context.addIssue({ code: "custom", path: ["articles"], message: "Ready lessons need domestic and international coverage." });
+    }
+  }
 });
 
 export const EditorialDaySchema = z.object({
@@ -105,12 +119,30 @@ export const EditorialDaySchema = z.object({
 });
 export const EditorialLedgerSchema = z.object({ schemaVersion: z.literal(1), days: z.array(EditorialDaySchema).max(7) });
 
+export const LessonPathSchema = z.string().regex(/^data\/lessons\/\d{4}-\d{2}-\d{2}-[a-f0-9]{16}\.json$/u);
 export const LessonIndexEntrySchema = z.object({
-  date: z.string(), status: z.enum(["ready", "delayed"]), articles: z.array(z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u), status: z.enum(["ready", "delayed"]), lessonPath: LessonPathSchema, articles: z.array(z.object({
     id: z.string(), title: z.string(), source: SourceSchema, scope: ScopeSchema, topic: TopicSchema, difficulty: z.string(), isFollowUp: z.boolean(),
-  })),
+  })).max(3),
+}).strict().superRefine((entry, context) => {
+  if (!entry.lessonPath.startsWith(`data/lessons/${entry.date}-`)) {
+    context.addIssue({ code: "custom", path: ["lessonPath"], message: "Lesson path date must match index date." });
+  }
+  if (entry.status === "delayed" && entry.articles.length !== 0) {
+    context.addIssue({ code: "custom", path: ["articles"], message: "Delayed index entries must not contain articles." });
+  }
+  if (entry.status === "ready") {
+    if (entry.articles.length < 2) {
+      context.addIssue({ code: "custom", path: ["articles"], message: "Ready index entries need two or three articles." });
+    }
+    const domestic = entry.articles.some((article) => article.scope !== "international");
+    const international = entry.articles.some((article) => article.scope === "international");
+    if (!domestic || !international) {
+      context.addIssue({ code: "custom", path: ["articles"], message: "Ready index entries need domestic and international coverage." });
+    }
+  }
 });
-export const LessonIndexSchema = z.object({ schemaVersion: z.literal(1), dates: z.array(LessonIndexEntrySchema) });
+export const LessonIndexSchema = z.object({ schemaVersion: z.literal(1), dates: z.array(LessonIndexEntrySchema) }).strict();
 
 export type Source = z.infer<typeof SourceSchema>;
 export type Scope = z.infer<typeof ScopeSchema>;

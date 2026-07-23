@@ -3,6 +3,7 @@ import {
   DailyLessonSchema,
   EditorialLedgerSchema,
   LessonArticleSchema,
+  LessonIndexSchema,
   countSwedishWords,
 } from "../../src/contracts/content";
 
@@ -43,13 +44,47 @@ describe("persisted content contracts", () => {
     expect(countSwedishWords(words(299))).toBe(299);
   });
 
-  it("accepts a 300-word lesson with bilingual summaries and annotation meanings", () => {
+  it("accepts a ready lesson with domestic and international coverage", () => {
     const lesson = {
       schemaVersion: 1, date: "2026-07-23", timezone: "Europe/Stockholm", generatedAt: "2026-07-23T05:05:00.000Z",
       status: "ready", sourceHealth: { svt: "ok", aftonbladet: "ok", dn: "ok" },
-      selectionSummary: "Balanced Sweden and international coverage.", articles: [validArticle()],
+      selectionSummary: "Balanced Sweden and international coverage.", articles: [
+        validArticle(),
+        {
+          ...validArticle(), id: "lesson-2", source: "dn", sourceUrl: "https://www.dn.se/varlden/test", scope: "international",
+          originalSentenceNotes: [
+            { quote: "Kommunerna får nya regler.", sourceUrl: "https://www.dn.se/varlden/test", annotationIds: ["vocabulary:ansvar"] },
+            { quote: "Beslutet börjar gälla nästa år.", sourceUrl: "https://www.dn.se/varlden/test", annotationIds: ["vocabulary:ansvar"] },
+          ],
+        },
+      ],
     };
     expect(DailyLessonSchema.parse(lesson).articles[0]?.summaries.zh).toBe("中文摘要。");
+  });
+
+  it("rejects ready coverage shortages and delayed articles in lesson and index contracts", () => {
+    const base = {
+      schemaVersion: 1, date: "2026-07-23", timezone: "Europe/Stockholm", generatedAt: "2026-07-23T05:05:00.000Z",
+      sourceHealth: { svt: "ok", aftonbladet: "ok", dn: "ok" }, selectionSummary: "Summary.",
+    };
+    expect(() => DailyLessonSchema.parse({ ...base, status: "ready", articles: [validArticle()] })).toThrow();
+    expect(() => DailyLessonSchema.parse({ ...base, status: "delayed", articles: [validArticle()] })).toThrow();
+    expect(() => LessonIndexSchema.parse({
+      schemaVersion: 1,
+      dates: [{ date: "2026-07-23", status: "ready", lessonPath: "data/lessons/2026-07-23-0123456789abcdef.json", articles: [{
+        id: "lesson-1", title: "Title", source: "svt", scope: "sweden", topic: "daily-life", difficulty: "B1", isFollowUp: false,
+      }] }],
+    })).toThrow();
+    expect(() => LessonIndexSchema.parse({
+      schemaVersion: 1,
+      dates: [{ date: "2026-07-23", status: "delayed", lessonPath: "data/lessons/2026-07-23-0123456789abcdef.json", articles: [{
+        id: "lesson-1", title: "Title", source: "svt", scope: "sweden", topic: "daily-life", difficulty: "B1", isFollowUp: false,
+      }] }],
+    })).toThrow();
+    expect(() => LessonIndexSchema.parse({
+      schemaVersion: 1,
+      dates: [{ date: "2026-07-23", status: "delayed", lessonPath: "data/lessons/2026-07-22-0123456789abcdef.json", articles: [] }],
+    })).toThrow();
   });
 
   it("rejects an article with 299 actual study words", () => {
