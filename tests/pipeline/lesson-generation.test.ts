@@ -222,6 +222,34 @@ describe("validated lesson generation", () => {
     await expect(generateValidatedLesson(selected(), gateway)).rejects.toThrow("bad fact request");
     expect(generations).toBe(1);
   });
+
+  it("does not repair malformed or unsafe fact-verifier outcomes", async () => {
+    const zodFailure = z.object({ required: z.string() }).safeParse({}).error;
+    for (const error of [
+      new Error("lesson-fact-claimId-missing"),
+      new Error("lesson-fact-evidence-not-in-source:summary-sv"),
+      zodFailure,
+    ]) {
+      let generations = 0;
+      const gateway = {
+        generateLesson: async () => { generations += 1; return validLesson(); },
+        verifyLessonFacts: async () => { throw error; },
+      } as unknown as AiGateway;
+      await expect(generateValidatedLesson(selected(), gateway)).rejects.toBe(error);
+      expect(generations).toBe(1);
+    }
+  });
+
+  it("rethrows a second unsupported-fact result after exactly one repair", async () => {
+    const reasons: Array<string | undefined> = [];
+    const error = new Error("lesson-unsupported-fact:summary-sv");
+    const gateway = {
+      generateLesson: async (_input: unknown, reason?: string) => { reasons.push(reason); return validLesson(); },
+      verifyLessonFacts: async () => { throw error; },
+    } as unknown as AiGateway;
+    await expect(generateValidatedLesson(selected(), gateway)).rejects.toBe(error);
+    expect(reasons).toEqual([undefined, "lesson-unsupported-fact:summary-sv"]);
+  });
 });
 
 describe("OpenAI lesson gateway", () => {

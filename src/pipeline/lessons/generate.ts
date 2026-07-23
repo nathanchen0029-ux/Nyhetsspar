@@ -24,6 +24,7 @@ export function lessonFactClaims(lesson: Awaited<ReturnType<typeof validateLesso
 export async function generateValidatedLesson(selected: FingerprintedArticle, gateway: AiGateway) {
   let repairReason: string | undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    let validated;
     try {
       const lesson = await gateway.generateLesson({
         article: selected.article,
@@ -31,13 +32,20 @@ export async function generateValidatedLesson(selected: FingerprintedArticle, ga
         related: selected.related,
         isFollowUp: selected.isFollowUp,
       }, repairReason);
-      const validated = validateLessonAgainstSource(lesson, selected.article.body, selected.article.canonicalUrl);
-      await gateway.verifyLessonFacts(selected.article.body, lessonFactClaims(validated));
-      return validated;
+      validated = validateLessonAgainstSource(lesson, selected.article.body, selected.article.canonicalUrl);
     } catch (error) {
       const repairable = error instanceof ZodError || (error instanceof Error && error.message.startsWith("lesson-"));
       if (!repairable || attempt === 1) throw error;
       repairReason = error instanceof Error ? error.message : String(error);
+      continue;
+    }
+    try {
+      await gateway.verifyLessonFacts(selected.article.body, lessonFactClaims(validated));
+      return validated;
+    } catch (error) {
+      const repairable = error instanceof Error && error.message.startsWith("lesson-unsupported-fact:");
+      if (!repairable || attempt === 1) throw error;
+      repairReason = error.message;
     }
   }
   throw new Error("lesson-generation-failed");

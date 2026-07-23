@@ -31,3 +31,9 @@ None. Validation intentionally rejects model output that is structurally valid b
 - Added a primary-source-only fact-check operation for the title, sentence-segmented study text, all three summaries, and fact points. It enforces exact claim IDs, affirmative support, and non-empty verbatim evidence of at most 25 words. Unsupported factual claims receive the existing single content repair; transport/permanent verification failures do not.
 
 Follow-up verification: focused lesson/gateway/contracts tests (31 passed), `pnpm exec tsc --noEmit`, full `pnpm test` (80 passed), and `git diff --check` all passed.
+
+## Final fact-verification repair boundary
+
+`generateValidatedLesson` now handles generation/local validation and fact verification in separate phases. `ZodError` and `lesson-*` remain repairable only before the fact-check call. Within the fact-check phase, only `lesson-unsupported-fact:*` can request the one permitted regenerated lesson; malformed fact-check responses, evidence/claim-ID failures, Zod errors, and transport failures are rethrown unchanged. Regression tests cover each boundary and a second unsupported-fact failure.
+
+Final verification: focused lesson/gateway/contracts (33 passed), `pnpm exec tsc --noEmit`, full `pnpm test` (82 passed), and `git diff --check` all passed.
