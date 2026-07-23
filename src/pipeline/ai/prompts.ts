@@ -15,6 +15,7 @@ export const DUPLICATE_SYSTEM = [
 
 export const LESSON_SYSTEM = [
   "Create a natural Swedish news-learning lesson from one supplied public source article.",
+  "Write naturally in Swedish; label observed difficulty only and never simplify to a target level.",
   "Do not simplify toward a CEFR target; only label observed difficulty.",
   "Use no facts beyond the supplied source text.",
   "Never add unsupported numbers, people, causal claims, or background facts; omit uncertain details.",

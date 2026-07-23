@@ -1,10 +1,11 @@
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
-import { ScopeSchema, TopicSchema } from "../../contracts/content";
+import { AnnotationSchema, LessonArticleSchema, ScopeSchema, TopicSchema, countSwedishWords } from "../../contracts/content";
 import type { EventFingerprint } from "../../contracts/transient";
-import type { DuplicatePair, DuplicateReview, NewsAiGateway } from "./gateway";
-import { DUPLICATE_SYSTEM, FINGERPRINT_SYSTEM } from "./prompts";
+import { decorateParagraphs } from "../lessons/decorate";
+import type { AiGateway, DuplicatePair, DuplicateReview } from "./gateway";
+import { DUPLICATE_SYSTEM, FINGERPRINT_SYSTEM, LESSON_SYSTEM } from "./prompts";
 
 const FingerprintBatchSchema = z.object({ items: z.array(z.object({
   candidateId: z.string(), who: z.array(z.string()), action: z.string(), where: z.string(), when: z.string(), outcome: z.string(),
@@ -13,6 +14,19 @@ const FingerprintBatchSchema = z.object({ items: z.array(z.object({
 const DuplicateBatchSchema = z.object({ items: z.array(z.object({
   pairId: z.string(), sameEvent: z.boolean(), confidence: z.number().min(0).max(1), reason: z.string(), materialUpdate: z.boolean(),
 })) });
+const LessonDraftSchema = z.object({
+  studyTitle: z.string().min(1),
+  paragraphs: z.array(z.string().min(1)).min(2),
+  difficulty: z.object({
+    level: z.string().regex(/^(?:A1|A2|B1|B2|C1|C2)(?:[–-](?:A1|A2|B1|B2|C1|C2))?$/u),
+    reasons: z.array(z.string().min(1)).min(1),
+    readingMinutes: z.number().int().positive(),
+  }),
+  summaries: z.object({ sv: z.string().min(1), zh: z.string().min(1), en: z.string().min(1) }),
+  factPoints: z.array(z.string().min(1)).min(2),
+  originalSentenceNotes: z.array(z.object({ quote: z.string().min(1), annotationIds: z.array(z.string()).min(1) })).min(2).max(4),
+  annotations: z.array(AnnotationSchema).min(6).max(18),
+});
 
 type ParseClient = Pick<OpenAI, "responses">;
 
@@ -40,7 +54,7 @@ function isTransient(error: Error): boolean {
   return status === 429 || status >= 500 || error.name === "APIConnectionError" || error.name === "APIConnectionTimeoutError" || error.name === "APITimeoutError";
 }
 
-export function createOpenAiGateway(options: OpenAiGatewayOptions): NewsAiGateway {
+export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
   const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
   if (!options.client && !apiKey) throw new Error("openai-api-key-required");
   const client = options.client ?? new OpenAI({ apiKey, maxRetries: 0 });
@@ -85,6 +99,46 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): NewsAiGatewa
       const result = await parse(DuplicateBatchSchema, "duplicate_reviews", DUPLICATE_SYSTEM, pairs);
       assertOneForEach("review", pairs.map((pair) => pair.pairId), result.items.map((item) => item.pairId));
       return result.items;
+    },
+    async generateLesson(input, repairReason) {
+      const draft = LessonDraftSchema.parse(await parse(
+        LessonDraftSchema,
+        "lesson_draft",
+        LESSON_SYSTEM,
+        {
+          sourceArticle: {
+            title: input.article.title,
+            publishedAt: input.article.publishedAt,
+            body: input.article.body.length <= 12_000 ? input.article.body : `${input.article.body.slice(0, 9_000)}\n[…]\n${input.article.body.slice(-3_000)}`,
+          },
+          eventFingerprint: input.fingerprint,
+          relatedCoverage: input.related.map(({ source, title, canonicalUrl }) => ({ source, title, url: canonicalUrl })),
+          repairReason,
+        },
+      ));
+      const studyParagraphs = decorateParagraphs(draft.paragraphs, draft.annotations);
+      return LessonArticleSchema.parse({
+        id: input.article.id,
+        eventFingerprint: input.fingerprint.canonical,
+        source: input.article.source,
+        sourceUrl: input.article.canonicalUrl,
+        sourceTitle: input.article.title,
+        publishedAt: input.article.publishedAt,
+        scope: input.fingerprint.scope,
+        topic: input.fingerprint.topic,
+        isFollowUp: input.isFollowUp,
+        difficulty: draft.difficulty,
+        studyTitle: draft.studyTitle,
+        studyParagraphs,
+        wordCount: countSwedishWords(draft.paragraphs.join("\n\n")),
+        summaries: draft.summaries,
+        factPoints: draft.factPoints,
+        originalSentenceNotes: draft.originalSentenceNotes.map((note) => ({ ...note, sourceUrl: input.article.canonicalUrl })),
+        annotations: draft.annotations,
+        relatedCoverage: input.related.map(({ source, title, canonicalUrl }) => ({ source, title, url: canonicalUrl })),
+        generationModel: model,
+        contentHash: input.article.contentHash,
+      });
     },
   };
 }
