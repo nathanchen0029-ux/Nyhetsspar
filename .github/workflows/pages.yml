@@ -1,0 +1,143 @@
+name: Generate lessons and deploy Pages
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "7 7 * * *"
+      timezone: "Europe/Stockholm"
+  workflow_dispatch:
+    inputs:
+      lesson_date:
+        description: Optional current Stockholm date in YYYY-MM-DD
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-main
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Sync the latest lesson data
+        run: git pull --ff-only origin main
+      - name: Generate daily lessons
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-5.4-mini' }}
+          LESSON_DATE: ${{ inputs.lesson_date }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -n "$LESSON_DATE" ]; then
+              pnpm pipeline -- --force=true --date="$LESSON_DATE"
+            else
+              pnpm pipeline -- --force=true
+            fi
+          else
+            pnpm pipeline
+          fi
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm check:secrets
+      - name: Verify publishable data boundary
+        run: |
+          test ! -e data/pending-publication.json
+          pnpm check:secrets -- public/data data
+      - name: Commit validated derived lesson data
+        run: |
+          test ! -e data/pending-publication.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- public/data data/editorial-ledger.json data/cache/index.json
+          while IFS= read -r path; do
+            case "$path" in
+              public/data/index.json|public/data/lessons/*.json|data/editorial-ledger.json|data/cache/index.json) ;;
+              *) echo "::error::Unexpected publication path: $path"; exit 1 ;;
+            esac
+          done < <(git diff --cached --name-only)
+          if git diff --cached --quiet; then
+            echo "No lesson data changes"
+          else
+            git commit -m "content: publish daily Swedish lesson [skip ci]"
+            git push origin HEAD:main
+          fi
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  build:
+    if: github.event_name == 'push' && github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip ci]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm check:secrets
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  deploy:
+    if: always() && !cancelled() && (needs.generate.result == 'success' || needs.build.result == 'success')
+    runs-on: ubuntu-latest
+    needs:
+      - generate
+      - build
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Smoke-check deployed homepage
+        run: |
+          for attempt in 1 2 3 4 5; do
+            pnpm smoke -- "${{ steps.deployment.outputs.page_url }}" && exit 0
+            sleep 5
+          done
+          exit 1

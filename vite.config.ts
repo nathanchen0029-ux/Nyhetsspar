@@ -1,9 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const repository = process.env.GITHUB_REPOSITORY?.split("/")[1];
+export function resolvePagesBase(
+  environment: { GITHUB_REPOSITORY?: string },
+): string {
+  const repository = environment.GITHUB_REPOSITORY?.split("/")[1];
+  if (!repository || repository.toLowerCase().endsWith(".github.io")) {
+    return "/";
+  }
+  return `/${repository}/`;
+}
 
 export default defineConfig({
   plugins: [react()],
-  base: repository ? `/${repository}/` : "/",
+  base: resolvePagesBase(process.env),
 });

@@ -5,6 +5,7 @@ import {
   type DailyLesson,
   type LessonIndex,
 } from "../../contracts/content";
+import { reconcileLessonIndexEntry } from "../../contracts/reconcile";
 
 const base = import.meta.env.BASE_URL;
 
@@ -24,29 +25,6 @@ export class LessonRepository {
   async loadLesson(entry: LessonIndex["dates"][number]): Promise<DailyLesson> {
     const parsedEntry = LessonIndexEntrySchema.parse(entry);
     const lesson = DailyLessonSchema.parse(await getJson(parsedEntry.lessonPath));
-    const articlesMatch =
-      lesson.articles.length === parsedEntry.articles.length &&
-      lesson.articles.every((article, index) => {
-        const indexed = parsedEntry.articles[index];
-        return (
-          indexed !== undefined &&
-          indexed.id === article.id &&
-          indexed.title === article.studyTitle &&
-          indexed.source === article.source &&
-          indexed.scope === article.scope &&
-          indexed.topic === article.topic &&
-          indexed.difficulty === article.difficulty.level &&
-          indexed.isFollowUp === article.isFollowUp
-        );
-      });
-
-    if (
-      lesson.date !== parsedEntry.date ||
-      lesson.status !== parsedEntry.status ||
-      !articlesMatch
-    ) {
-      throw new Error("lesson-index-mismatch");
-    }
-    return lesson;
+    return reconcileLessonIndexEntry(parsedEntry, lesson);
   }
 }
