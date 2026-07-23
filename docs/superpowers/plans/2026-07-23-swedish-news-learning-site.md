@@ -3153,8 +3153,8 @@ export class LessonRepository {
     return LessonIndexSchema.parse(await getJson("data/index.json"));
   }
 
-  async loadLesson(date: string): Promise<DailyLesson> {
-    return DailyLessonSchema.parse(await getJson(`data/lessons/${date}.json`));
+  async loadLesson(entry: LessonIndex["dates"][number]): Promise<DailyLesson> {
+    return DailyLessonSchema.parse(await getJson(entry.lessonPath));
   }
 }
 ```
@@ -3365,7 +3365,7 @@ export function App() {
       .then(async (loadedIndex) => {
         setIndex(loadedIndex);
         const latest = loadedIndex.dates[0];
-        if (latest) setToday(await repository.loadLesson(latest.date));
+        if (latest) setToday(await repository.loadLesson(latest));
       })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
   }, []);
@@ -4008,7 +4008,12 @@ function LessonRoute({
       return;
     }
     repository
-      .loadLesson(date)
+      .loadIndex()
+      .then((index) => {
+        const entry = index.dates.find((item) => item.date === date);
+        if (!entry) throw new Error("找不到当天课程");
+        return repository.loadLesson(entry);
+      })
       .then((lesson) => {
         const index = lesson.articles.findIndex((item) => item.id === id);
         const match = lesson.articles[index];
@@ -4685,7 +4690,7 @@ export async function smokeDeployment(rawBaseUrl: string): Promise<void> {
   const latest = index.dates[0];
   if (!latest) return;
   const lesson = DailyLessonSchema.parse(
-    await (await requireOk(new URL(`data/lessons/${latest.date}.json`, base))).json(),
+    await (await requireOk(new URL(latest.lessonPath, base))).json(),
   );
   if (lesson.status === "ready" && (lesson.articles.length < 2 || lesson.articles.length > 3)) {
     throw new Error(`smoke-article-count:${lesson.articles.length}`);

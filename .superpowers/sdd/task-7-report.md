@@ -46,3 +46,10 @@ None known. Cross-file atomicity intentionally uses the public index as the visi
 - TypeScript: `pnpm exec tsc --noEmit` — passed.
 - Full suite: 96 passed across 8 files.
 - `git diff --check` — passed.
+
+## Re-review remediation
+
+- Pending-publication validation now derives the exact current-date index card from the pending lesson and immutable path, rejecting any status or article-card metadata drift before recovery can make it visible.
+- Every pending cache record bound to the pending lesson version must resolve to the same lesson date, article ID, canonical URL, and content hash; tampered journal cache metadata is rejected before the public index changes.
+- Added recovery regression coverage for tampered index-card and cache metadata, both asserting that the previous public index remains unchanged.
+- Updated the approved Task 8 browser repository and later article route, plus the Task 12 smoke check, to load the immutable `LessonIndexEntry.lessonPath` supplied by the public index rather than reconstructing a date-based filename.

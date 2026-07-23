@@ -26,6 +26,29 @@ const CacheEntrySchema = z.object({
   }
 });
 const CacheIndexSchema = z.object({ schemaVersion: z.literal(1), entries: z.array(CacheEntrySchema) }).strict();
+
+function indexEntry(lesson: DailyLesson, lessonPath: string): LessonIndex["dates"][number] {
+  return {
+    date: lesson.date,
+    status: lesson.status,
+    lessonPath,
+    articles: lesson.articles.map((article) => ({
+      id: article.id, title: article.studyTitle, source: article.source, scope: article.scope,
+      topic: article.topic, difficulty: article.difficulty.level, isFollowUp: article.isFollowUp,
+    })),
+  };
+}
+
+function equalIndexEntry(left: LessonIndex["dates"][number], right: LessonIndex["dates"][number]): boolean {
+  return left.date === right.date && left.status === right.status && left.lessonPath === right.lessonPath &&
+    left.articles.length === right.articles.length && left.articles.every((article, index) => {
+      const expected = right.articles[index];
+      return expected !== undefined && article.id === expected.id && article.title === expected.title &&
+        article.source === expected.source && article.scope === expected.scope && article.topic === expected.topic &&
+        article.difficulty === expected.difficulty && article.isFollowUp === expected.isFollowUp;
+    });
+}
+
 const PendingPublicationSchema = z.object({
   schemaVersion: z.literal(1),
   lesson: DailyLessonSchema,
@@ -35,9 +58,22 @@ const PendingPublicationSchema = z.object({
   cache: CacheIndexSchema.optional(),
 }).strict().superRefine((pending, context) => {
   const entry = pending.index.dates.find((item) => item.date === pending.lesson.date);
-  if (!entry || entry.lessonPath !== pending.lessonPath) {
-    context.addIssue({ code: "custom", path: ["index"], message: "Pending index must publish the pending lesson version." });
+  const expectedIndexEntry = indexEntry(pending.lesson, pending.lessonPath);
+  if (!entry || !equalIndexEntry(entry, expectedIndexEntry)) {
+    context.addIssue({ code: "custom", path: ["index"], message: "Pending index must exactly match the pending lesson version." });
   }
+  pending.cache?.entries.forEach((cacheEntry, index) => {
+    if (cacheEntry.lessonPath !== pending.lessonPath) return;
+    const article = pending.lesson.articles.find((item) => item.id === cacheEntry.lessonId);
+    if (
+      cacheEntry.lessonDate !== pending.lesson.date ||
+      article === undefined ||
+      article.sourceUrl !== cacheEntry.canonicalUrl ||
+      article.contentHash !== cacheEntry.contentHash
+    ) {
+      context.addIssue({ code: "custom", path: ["cache", "entries", index], message: "Pending cache entry must match the pending lesson article." });
+    }
+  });
 });
 
 export type CacheEntry = z.infer<typeof CacheEntrySchema>;
@@ -68,18 +104,6 @@ export interface DailyRepository {
   lessonExists(date: string): Promise<boolean>;
   findCachedLesson(canonicalUrl: string, contentHash: string): Promise<LessonArticle | null>;
   publishDaily(publication: DailyPublication): Promise<void>;
-}
-
-function indexEntry(lesson: DailyLesson, lessonPath: string): LessonIndex["dates"][number] {
-  return {
-    date: lesson.date,
-    status: lesson.status,
-    lessonPath,
-    articles: lesson.articles.map((article) => ({
-      id: article.id, title: article.studyTitle, source: article.source, scope: article.scope,
-      topic: article.topic, difficulty: article.difficulty.level, isFollowUp: article.isFollowUp,
-    })),
-  };
 }
 
 export class FileRepository implements DailyRepository {

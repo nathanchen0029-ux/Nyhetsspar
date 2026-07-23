@@ -353,4 +353,36 @@ describe("daily pipeline infrastructure", () => {
     await expect(new FileRepository(directory).lessonExists("2026-07-23")).rejects.toThrow();
     await expect(readFile(join(directory, "public/data/index.json"), "utf8")).resolves.toBe(originalIndex);
   });
+
+  it("rejects a pending journal with tampered current-date index article metadata", async () => {
+    const directory = await root();
+    await new FileRepository(directory).publishDaily({ lesson: readyLesson("2026-07-23", "metadata-old") });
+    const originalIndex = await readFile(join(directory, "public/data/index.json"), "utf8");
+    const failing = new FileRepository(directory, { beforeRename: (path) => { if (path.endsWith("public/data/index.json")) throw new Error("index-failpoint"); } });
+    await expect(failing.publishDaily({ lesson: readyLesson("2026-07-23", "metadata-new") })).rejects.toThrow("index-failpoint");
+    const journalPath = join(directory, "data/pending-publication.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8")) as { index: { dates: Array<{ date: string; articles: Array<{ title: string }> }> } };
+    journal.index.dates.find((entry) => entry.date === "2026-07-23")!.articles[0]!.title = "tampered title";
+    await writeFile(journalPath, JSON.stringify(journal), "utf8");
+    await expect(new FileRepository(directory).loadIndex()).rejects.toThrow();
+    await expect(readFile(join(directory, "public/data/index.json"), "utf8")).resolves.toBe(originalIndex);
+  });
+
+  it("rejects a pending journal with cache metadata not backed by its lesson", async () => {
+    const directory = await root();
+    await new FileRepository(directory).publishDaily({ lesson: readyLesson("2026-07-23", "cache-journal-old") });
+    const originalIndex = await readFile(join(directory, "public/data/index.json"), "utf8");
+    const replacement = readyLesson("2026-07-23", "cache-journal-new");
+    const failing = new FileRepository(directory, { beforeRename: (path) => { if (path.endsWith("public/data/index.json")) throw new Error("index-failpoint"); } });
+    await expect(failing.publishDaily({
+      lesson: replacement,
+      cacheEntries: replacement.articles.map((article) => ({ canonicalUrl: article.sourceUrl, contentHash: article.contentHash, lessonDate: replacement.date, lessonId: article.id })),
+    })).rejects.toThrow("index-failpoint");
+    const journalPath = join(directory, "data/pending-publication.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8")) as { cache: { entries: Array<{ canonicalUrl: string }> } };
+    journal.cache.entries[0]!.canonicalUrl = "https://www.svt.se/nyheter/tampered";
+    await writeFile(journalPath, JSON.stringify(journal), "utf8");
+    await expect(new FileRepository(directory).loadIndex()).rejects.toThrow();
+    await expect(readFile(join(directory, "public/data/index.json"), "utf8")).resolves.toBe(originalIndex);
+  });
 });
