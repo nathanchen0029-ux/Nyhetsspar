@@ -37,13 +37,13 @@ function assertOneForEach(kind: string, expectedIds: readonly string[], received
 
 function isTransient(error: Error): boolean {
   const status = typeof error === "object" && "status" in error ? Number((error as { status?: unknown }).status) : 0;
-  return status === 429 || status >= 500 || error.name === "APIConnectionError" || error.name === "APITimeoutError";
+  return status === 429 || status >= 500 || error.name === "APIConnectionError" || error.name === "APIConnectionTimeoutError" || error.name === "APITimeoutError";
 }
 
 export function createOpenAiGateway(options: OpenAiGatewayOptions): NewsAiGateway {
   const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
   if (!options.client && !apiKey) throw new Error("openai-api-key-required");
-  const client = options.client ?? new OpenAI({ apiKey });
+  const client = options.client ?? new OpenAI({ apiKey, maxRetries: 0 });
   const model = options.model ?? "gpt-5.4-mini";
   const retryDelayMs = options.retryDelayMs ?? 2_000;
 
@@ -56,7 +56,7 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): NewsAiGatewa
           max_output_tokens: 4_500,
           input: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(payload) }],
           text: { format: zodTextFormat(schema, name) },
-        });
+        }, { maxRetries: 0 });
         if (!response.output_parsed) throw new Error(`openai-empty-structured-output:${name}`);
         const usage = response.usage;
         process.stdout.write(`${JSON.stringify({ type: "openai-usage", model, operation: name, inputTokens: usage?.input_tokens ?? 0, outputTokens: usage?.output_tokens ?? 0 })}\n`);

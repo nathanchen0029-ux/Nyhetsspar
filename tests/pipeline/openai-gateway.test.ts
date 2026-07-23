@@ -7,7 +7,8 @@ const article: SourceArticle = { id: "one", source: "svt", url: "https://svt.se/
 
 function clientWith(outputs: unknown[]) {
   let calls = 0;
-  return { calls: () => calls, responses: { parse: async () => { const output = outputs[calls++]; if (output instanceof Error) throw output; return { output_parsed: output, usage: { input_tokens: 1, output_tokens: 2 } }; } } };
+  const requestOptions: unknown[] = [];
+  return { calls: () => calls, requestOptions, responses: { parse: async (_params: unknown, options: unknown) => { requestOptions.push(options); const output = outputs[calls++]; if (output instanceof Error) throw output; return { output_parsed: output, usage: { input_tokens: 1, output_tokens: 2 } }; } } };
 }
 
 describe("OpenAI news gateway", () => {
@@ -31,6 +32,14 @@ describe("OpenAI news gateway", () => {
     const client = clientWith([retryable, retryable, { items: [validFingerprint()] }]);
     await expect(createOpenAiGateway({ apiKey: "test", client: client as never, retryDelayMs: 0 }).fingerprint([article])).resolves.toHaveLength(1);
     expect(client.calls()).toBe(3);
+    expect(client.requestOptions).toEqual([{ maxRetries: 0 }, { maxRetries: 0 }, { maxRetries: 0 }]);
+  });
+
+  it("retries the current SDK timeout error name", async () => {
+    const timeout = Object.assign(new Error("timed out"), { name: "APIConnectionTimeoutError" });
+    const client = clientWith([timeout, { items: [validFingerprint()] }]);
+    await expect(createOpenAiGateway({ apiKey: "test", client: client as never, retryDelayMs: 0 }).fingerprint([article])).resolves.toHaveLength(1);
+    expect(client.calls()).toBe(2);
   });
 
   it("does not retry permanent errors", async () => {

@@ -103,4 +103,53 @@ describe("event deduplication", () => {
     await deduplicateArticles([first, duplicate], emptyLedger, gateway);
     expect(fingerprinted).toBe(1);
   });
+
+  it("keeps an exact historical repeat only when review confirms a material update", async () => {
+    const current = article("current", "svt", "Kommunerna fattar ett nytt beslut");
+    const previous = { ...fingerprint(current), candidateId: "historical" };
+    const ledger = ledgerWithDetails([previous]);
+    const gateway: NewsAiGateway = {
+      async fingerprint(items) { return items.map((item) => fingerprint(item)); },
+      async reviewPairs(pairs) { return pairs.map((pair) => ({ pairId: pair.pairId, sameEvent: true, confidence: 0.9, reason: "confirmed update", materialUpdate: true })); },
+    };
+    const result = await deduplicateArticles([current], ledger, gateway);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.isFollowUp).toBe(true);
+  });
+
+  it("keeps a similar but unrelated historical event without marking it as a follow-up", async () => {
+    const current = article("current", "svt", "Kommunerna fattar ett nytt beslut");
+    const previous = { ...fingerprint(current, "kommunerna-nya-regler-atervinning-2026-07-22"), candidateId: "historical", action: "gamla regler för återvinning" };
+    const gateway: NewsAiGateway = {
+      async fingerprint(items) { return items.map((item) => fingerprint(item, "kommunerna-nya-regler-atervinning-2026-07-23")); },
+      async reviewPairs(pairs) { return pairs.map((pair) => ({ pairId: pair.pairId, sameEvent: false, confidence: 0.98, reason: "different decisions", materialUpdate: false })); },
+    };
+    const result = await deduplicateArticles([current], ledgerWithDetails([previous]), gateway);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.isFollowUp).toBe(false);
+  });
+
+  it("suppresses the same historical event without an update when its canonical changes", async () => {
+    const current = article("current", "svt", "Kommunerna fattar ett nytt beslut");
+    const previous = { ...fingerprint(current, "kommunerna-nya-regler-atervinning-2026-07-22"), candidateId: "historical" };
+    const gateway: NewsAiGateway = {
+      async fingerprint(items) { return items.map((item) => fingerprint(item, "kommunerna-nya-regler-atervinning-2026-07-23")); },
+      async reviewPairs(pairs) { return pairs.map((pair) => ({ pairId: pair.pairId, sameEvent: true, confidence: 0.9, reason: "same event", materialUpdate: false })); },
+    };
+    await expect(deduplicateArticles([current], ledgerWithDetails([previous]), gateway)).resolves.toEqual([]);
+  });
+
+  it("selects the same representative when equal-score input order changes", async () => {
+    const first = article("z-id", "svt", "Samma nyhet", "lika många ord här");
+    const second = { ...article("a-id", "dn", "Samma nyhet", "lika många ord här"), canonicalUrl: "https://dn.se/a" };
+    const gateway: NewsAiGateway = { async fingerprint(items) { return items.map((item) => fingerprint(item)); }, async reviewPairs(pairs) { return pairs.map((pair) => ({ pairId: pair.pairId, sameEvent: true, confidence: 0.9, reason: "same", materialUpdate: false })); } };
+    const forward = await deduplicateArticles([first, second], emptyLedger, gateway);
+    const reverse = await deduplicateArticles([second, first], emptyLedger, gateway);
+    expect(forward[0]?.article.id).toBe("a-id");
+    expect(reverse[0]?.article.id).toBe("a-id");
+  });
 });
+
+function ledgerWithDetails(eventDetails: EventFingerprint[]): EditorialLedger {
+  return { schemaVersion: 1, days: [{ date: "2026-07-22", scopes: { local: 0, sweden: 1, international: 1 }, topics: { politics: 0, economy: 0, "daily-life": 1, culture: 1, sports: 0 }, sources: { svt: 1, aftonbladet: 1, dn: 0 }, eventFingerprints: eventDetails.map((item) => item.canonical), eventDetails }] };
+}

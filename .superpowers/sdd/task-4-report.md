@@ -1,6 +1,6 @@
 ### Task 4 Report: OpenAI Gateway and Cross-Source Deduplication
 
-Commit: pending
+Initial commit: `c21fd73 feat: deduplicate cross-source news events`.
 
 ### RED
 
@@ -30,3 +30,11 @@ Commit: pending
 ### Concerns
 
 - Usage metadata is deliberately written to stdout so pipeline observability does not capture source text, prompts, structured responses, or credentials.
+
+### Review follow-up
+
+- Disabled SDK retries both at OpenAI client construction and per Responses request; the gateway's loop is now the sole retry controller and has exactly three total HTTP attempts.
+- Recognizes the current `APIConnectionTimeoutError` name (while retaining compatibility with the earlier timeout name).
+- Added optional, backward-compatible `eventDetails` to historical ledger days. Detailed history is reviewed through the AI gateway; legacy string-only exact repeats remain fail-closed. A confirmed historical material update retains and labels the current item; a confirmed same event without an update suppresses it; an unrelated match remains a normal item.
+- Current-current and current-historical pairs are tracked separately, so history never enters the union-find. When multiple historical reviews conflict, any confirmed material update is sufficient to retain the cluster and label it as a follow-up; otherwise any confirmed same-event/no-update result suppresses it.
+- Equal representative scores now break deterministically by canonical URL then ID. Restored the complete lesson prompt constraints.

@@ -4,6 +4,10 @@ export const SourceSchema = z.enum(["svt", "aftonbladet", "dn"]);
 export const ScopeSchema = z.enum(["local", "sweden", "international"]);
 export const TopicSchema = z.enum(["politics", "economy", "daily-life", "culture", "sports"]);
 export const SourceHealthSchema = z.enum(["ok", "partial", "failed"]);
+export const EventFingerprintDetailSchema = z.object({
+  candidateId: z.string(), who: z.array(z.string()), action: z.string(), where: z.string(), when: z.string(), outcome: z.string(),
+  scope: ScopeSchema, topic: TopicSchema, canonical: z.string(),
+});
 
 export function countSwedishWords(text: string): number {
   return text.trim().split(/\s+/u).filter((word) => /[\p{L}\p{N}]/u.test(word)).length;
@@ -97,7 +101,7 @@ export const DailyLessonSchema = z.object({
 
 export const EditorialDaySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u), scopes: z.record(ScopeSchema, z.number().int().nonnegative()),
-  topics: z.record(TopicSchema, z.number().int().nonnegative()), sources: z.record(SourceSchema, z.number().int().nonnegative()), eventFingerprints: z.array(z.string()),
+  topics: z.record(TopicSchema, z.number().int().nonnegative()), sources: z.record(SourceSchema, z.number().int().nonnegative()), eventFingerprints: z.array(z.string()), eventDetails: z.array(EventFingerprintDetailSchema).optional(),
 });
 export const EditorialLedgerSchema = z.object({ schemaVersion: z.literal(1), days: z.array(EditorialDaySchema).max(7) });
 
@@ -115,4 +119,5 @@ export type Annotation = z.infer<typeof AnnotationSchema>;
 export type LessonArticle = z.infer<typeof LessonArticleSchema>;
 export type DailyLesson = z.infer<typeof DailyLessonSchema>;
 export type EditorialLedger = z.infer<typeof EditorialLedgerSchema>;
+export type EventFingerprintDetail = z.infer<typeof EventFingerprintDetailSchema>;
 export type LessonIndex = z.infer<typeof LessonIndexSchema>;
