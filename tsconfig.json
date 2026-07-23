@@ -10,7 +10,7 @@
     "exactOptionalPropertyTypes": true,
     "resolveJsonModule": true,
     "allowImportingTsExtensions": false,
-    "types": ["node", "vitest/globals", "@testing-library/jest-dom"],
+    "types": ["node", "vite/client", "vitest/globals", "@testing-library/jest-dom"],
     "skipLibCheck": true,
     "noEmit": true
   },
