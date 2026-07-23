@@ -38,3 +38,10 @@ Initial commit: `c21fd73 feat: deduplicate cross-source news events`.
 - Added optional, backward-compatible `eventDetails` to historical ledger days. Detailed history is reviewed through the AI gateway; legacy string-only exact repeats remain fail-closed. A confirmed historical material update retains and labels the current item; a confirmed same event without an update suppresses it; an unrelated match remains a normal item.
 - Current-current and current-historical pairs are tracked separately, so history never enters the union-find. When multiple historical reviews conflict, any confirmed material update is sufficient to retain the cluster and label it as a follow-up; otherwise any confirmed same-event/no-update result suppresses it.
 - Equal representative scores now break deterministically by canonical URL then ID. Restored the complete lesson prompt constraints.
+
+### Final follow-up verification
+
+- Focused gateway/dedupe/contracts: 26 passed.
+- TypeScript: passed.
+- Full suite: 58 passed.
+- `git diff --check`: passed.
