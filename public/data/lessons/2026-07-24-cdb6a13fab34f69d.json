@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-07-24",
+  "timezone": "Europe/Stockholm",
+  "generatedAt": "2026-07-24T12:25:57.651Z",
+  "status": "delayed",
+  "sourceHealth": {
+    "svt": "ok",
+    "aftonbladet": "ok",
+    "dn": "partial"
+  },
+  "selectionSummary": "Fewer than two fully validated public lessons were available.",
+  "articles": []
+}
