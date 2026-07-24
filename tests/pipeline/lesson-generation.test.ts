@@ -191,10 +191,28 @@ describe("validated lesson generation", () => {
   });
 
   it("repairs a structured-output Zod error only once", async () => {
-    let calls = 0;
-    const gateway = { generateLesson: async () => { calls += 1; throw z.object({ required: z.string() }).parse({}); }, verifyLessonFacts: async () => undefined } as unknown as AiGateway;
+    const reasons: Array<string | undefined> = [];
+    const gateway = { generateLesson: async (_input: unknown, reason?: string) => { reasons.push(reason); throw z.object({ required: z.string() }).parse({}); }, verifyLessonFacts: async () => undefined } as unknown as AiGateway;
     await expect(generateValidatedLesson(selected(), gateway)).rejects.toBeInstanceOf(z.ZodError);
-    expect(calls).toBe(2);
+    expect(reasons).toEqual([undefined, "lesson-schema-invalid:required:invalid_type"]);
+  });
+
+  it("gives an explicit buffered word-count instruction when repairing a short structured draft", async () => {
+    const reasons: Array<string | undefined> = [];
+    const shortDraftError = z.object({ studyParagraphs: z.string().min(300) }).safeParse({ studyParagraphs: "för kort" }).error;
+    const gateway = {
+      generateLesson: async (_input: unknown, reason?: string) => {
+        reasons.push(reason);
+        if (reasons.length === 1) throw shortDraftError;
+        return validLesson();
+      },
+      verifyLessonFacts: async () => undefined,
+    } as unknown as AiGateway;
+    await expect(generateValidatedLesson(selected(), gateway)).resolves.toMatchObject({ id: "one" });
+    expect(reasons).toEqual([
+      undefined,
+      "lesson-word-count-out-of-range: rewrite the study paragraphs to contain 360 to 440 Swedish words; count paragraph text only",
+    ]);
   });
 
   it("repairs once when the fact verifier rejects a non-numeric hallucination", async () => {
@@ -294,6 +312,39 @@ describe("OpenAI lesson gateway", () => {
     const longEvidenceClient = { responses: { parse: async () => ({ output_parsed: { items: [{ claimId: "claim-1", supported: true, evidence: longEvidence, reason: "för långt" }] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
     const longEvidenceGateway = createOpenAiGateway({ apiKey: "test", client: longEvidenceClient as never });
     await expect(longEvidenceGateway.verifyLessonFacts(`${sourceBody} ${longEvidence}`, [{ id: "claim-1", text: "En kontroll" }])).rejects.toThrow("lesson-fact-evidence-too-long");
+  });
+
+  it("accepts verbatim evidence across source whitespace and retries verifier-only evidence formatting once", async () => {
+    const whitespaceClient = { responses: { parse: async () => ({ output_parsed: { items: [{ claimId: "claim-1", supported: true, evidence: "Kommunerna får\nnya regler.", reason: "stöds" }] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
+    const whitespaceGateway = createOpenAiGateway({ apiKey: "test", client: whitespaceClient as never });
+    await expect(whitespaceGateway.verifyLessonFacts(sourceBody, [{ id: "claim-1", text: "Kommunerna får nya regler." }])).resolves.toBeUndefined();
+
+    const payloads: Array<{ repairReason?: string }> = [];
+    let attempts = 0;
+    const repairingClient = {
+      responses: {
+        parse: async (params: { input: Array<{ content: string }> }) => {
+          payloads.push(JSON.parse(params.input[1]!.content) as { repairReason?: string });
+          attempts += 1;
+          return {
+            output_parsed: {
+              items: [{
+                claimId: "claim-1",
+                supported: true,
+                evidence: attempts === 1 ? "omskriven evidens" : "Kommunerna får nya regler.",
+                reason: "stöds",
+              }],
+            },
+            usage: { input_tokens: 1, output_tokens: 2 },
+          };
+        },
+      },
+    };
+    const repairingGateway = createOpenAiGateway({ apiKey: "test", client: repairingClient as never });
+    await expect(repairingGateway.verifyLessonFacts(sourceBody, [{ id: "claim-1", text: "Kommunerna får nya regler." }])).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+    expect(payloads[0]?.repairReason).toBeUndefined();
+    expect(payloads[1]?.repairReason).toContain("lesson-fact-evidence-not-in-source:claim-1");
   });
 });
 

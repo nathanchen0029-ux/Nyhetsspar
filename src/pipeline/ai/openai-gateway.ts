@@ -77,6 +77,27 @@ function assertFactClaimIds(expectedClaims: readonly LessonFactClaim[], received
   if (received.size !== expected.size) throw new Error("lesson-fact-claimId-missing");
 }
 
+function normalizedVerbatimText(text: string): string {
+  return text.normalize("NFKC").replace(/\s+/gu, " ").trim();
+}
+
+function validateFactCheckResult(
+  sourceBody: string,
+  claims: readonly LessonFactClaim[],
+  items: z.infer<typeof FactCheckBatchSchema>["items"],
+): void {
+  assertFactClaimIds(claims, items.map((item) => item.claimId));
+  const normalizedSource = normalizedVerbatimText(sourceBody);
+  for (const item of items) {
+    if (!item.supported) throw new Error(`lesson-unsupported-fact:${item.claimId}`);
+    const evidenceWords = countSwedishWords(item.evidence);
+    if (evidenceWords === 0 || evidenceWords > 25) throw new Error(`lesson-fact-evidence-too-long:${item.claimId}`);
+    if (!normalizedSource.includes(normalizedVerbatimText(item.evidence))) {
+      throw new Error(`lesson-fact-evidence-not-in-source:${item.claimId}`);
+    }
+  }
+}
+
 export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
   const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
   if (!options.client && !apiKey) throw new Error("openai-api-key-required");
@@ -193,19 +214,23 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
     },
     async verifyLessonFacts(sourceBody, claims) {
       if (claims.length === 0) return;
-      const result = FactCheckBatchSchema.parse(await parse(
-        FactCheckBatchSchema,
-        "lesson_fact_check",
-        FACT_CHECK_SYSTEM,
-        { sourceBody, claims },
-        LESSON_MAX_OUTPUT_TOKENS,
-      ));
-      assertFactClaimIds(claims, result.items.map((item) => item.claimId));
-      for (const item of result.items) {
-        if (!item.supported) throw new Error(`lesson-unsupported-fact:${item.claimId}`);
-        const evidenceWords = countSwedishWords(item.evidence);
-        if (evidenceWords === 0 || evidenceWords > 25) throw new Error(`lesson-fact-evidence-too-long:${item.claimId}`);
-        if (!sourceBody.includes(item.evidence)) throw new Error(`lesson-fact-evidence-not-in-source:${item.claimId}`);
+      let repairReason: string | undefined;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = FactCheckBatchSchema.parse(await parse(
+          FactCheckBatchSchema,
+          "lesson_fact_check",
+          FACT_CHECK_SYSTEM,
+          { sourceBody, claims, repairReason },
+          LESSON_MAX_OUTPUT_TOKENS,
+        ));
+        try {
+          validateFactCheckResult(sourceBody, claims, result.items);
+          return;
+        } catch (error) {
+          const evidenceFailure = error instanceof Error && error.message.startsWith("lesson-fact-evidence-");
+          if (!evidenceFailure || attempt === 1) throw error;
+          repairReason = `${error.message}; copy a short evidence substring directly from sourceBody without rewriting it`;
+        }
       }
     },
   };

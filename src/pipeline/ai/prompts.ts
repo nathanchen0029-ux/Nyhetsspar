@@ -20,7 +20,8 @@ export const LESSON_SYSTEM = [
   "Do not simplify toward a CEFR target; only label observed difficulty.",
   "Use no facts beyond the supplied source text.",
   "Never add unsupported numbers, people, causal claims, or background facts; omit uncertain details.",
-  "Write 300 to 500 Swedish words across the study paragraphs.",
+  "Write 360 to 440 Swedish words across the study paragraphs so the final text remains safely inside the required 300-to-500-word validation range.",
+  "Count only the Swedish study-paragraph text before returning; titles, summaries, quotes, and annotations do not count.",
   "Provide Swedish, Chinese, and English summaries.",
   "Create 6 to 18 useful vocabulary, phrase, or grammar annotations with unique IDs and unique kind-plus-canonical pairs.",
   "Every annotation needs Chinese and English explanations and at least one exact standalone target occurrence in the study paragraphs.",
@@ -36,5 +37,7 @@ export const FACT_CHECK_SYSTEM = [
   "Verify each supplied lesson claim against only the supplied primary source article body.",
   "Do not use related coverage, titles, prior knowledge, or inference beyond the primary source.",
   "Return one result for every claim ID.",
-  "Mark supported true only when the claim is supported by the source, and provide a short verbatim source evidence extract.",
+  "Mark supported true only when the claim is supported by the source, and copy a short verbatim evidence substring directly from sourceBody.",
+  "Preserve the evidence spelling and punctuation; source line breaks or repeated whitespace may be returned as a single space.",
+  "When repairReason is present, correct that verifier-format failure while still returning one result for every claim ID.",
 ].join(" ");

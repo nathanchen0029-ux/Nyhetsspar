@@ -21,6 +21,21 @@ export function lessonFactClaims(lesson: Awaited<ReturnType<typeof validateLesso
   ];
 }
 
+function lessonRepairReason(error: Error): string {
+  if (!(error instanceof ZodError)) return error.message;
+  const wordCountFailure = error.issues.some((issue) =>
+    issue.path.some((part) => part === "wordCount" || part === "studyParagraphs"));
+  if (wordCountFailure) {
+    return "lesson-word-count-out-of-range: rewrite the study paragraphs to contain 360 to 440 Swedish words; count paragraph text only";
+  }
+  const issues = error.issues.slice(0, 8).map((issue) => {
+    const path = issue.path.filter((part): part is string | number =>
+      typeof part === "string" || typeof part === "number").join(".");
+    return `${path || "root"}:${issue.code}`;
+  });
+  return `lesson-schema-invalid:${issues.join(",")}`;
+}
+
 export async function generateValidatedLesson(selected: FingerprintedArticle, gateway: AiGateway) {
   let repairReason: string | undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -36,7 +51,7 @@ export async function generateValidatedLesson(selected: FingerprintedArticle, ga
     } catch (error) {
       const repairable = error instanceof ZodError || (error instanceof Error && error.message.startsWith("lesson-"));
       if (!repairable || attempt === 1) throw error;
-      repairReason = error instanceof Error ? error.message : String(error);
+      repairReason = lessonRepairReason(error);
       continue;
     }
     try {
