@@ -8,16 +8,20 @@ function normalize(text: string): string {
   return text.normalize("NFKC").toLocaleLowerCase("sv").replace(/\s+/gu, " ").trim();
 }
 
-function isWholeTargetIn(text: string, target: string): boolean {
+export function isWholeTargetIn(text: string, target: string): boolean {
   if (!target) return false;
   const escaped = target.normalize("NFKC").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&").replace(/\s+/gu, "\\s+");
   return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "iu").test(text.normalize("NFKC"));
 }
 
-function quoteForms(annotation: Annotation): string[] {
+export function quoteForms(annotation: Annotation): string[] {
   if (annotation.kind === "grammar") return [...annotation.targets, annotation.sourceFragment];
   if (annotation.kind === "phrase") return [...annotation.targets, annotation.sourceForm, annotation.canonicalForm, ...annotation.verbForms];
   return annotation.targets;
+}
+
+export function annotationAppearsInText(annotation: Annotation, text: string): boolean {
+  return quoteForms(annotation).some((form) => isWholeTargetIn(text, form));
 }
 
 function annotationMatchesSegment(annotation: Annotation, text: string): boolean {
@@ -87,7 +91,7 @@ export function validateLessonAgainstSource(input: LessonArticle, sourceBody: st
     for (const id of note.annotationIds) {
       const annotation = annotationsById.get(id);
       if (!annotation) throw new Error("lesson-quote-annotation-missing");
-      if (!quoteForms(annotation).some((form) => isWholeTargetIn(note.quote, form))) {
+      if (!annotationAppearsInText(annotation, note.quote)) {
         throw new Error(`lesson-quote-annotation-unbound:${id}`);
       }
     }

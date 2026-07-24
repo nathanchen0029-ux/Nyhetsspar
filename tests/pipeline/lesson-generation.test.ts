@@ -255,9 +255,11 @@ describe("validated lesson generation", () => {
 describe("OpenAI lesson gateway", () => {
   it("assembles trusted metadata and safe ID while exposing no related body to the model", async () => {
     const payloads: unknown[] = [];
+    const requests: Array<{ max_output_tokens?: number; input: Array<{ content: string }> }> = [];
     const client = {
       responses: {
         parse: async (params: { input: Array<{ content: string }> }) => {
+          requests.push(params);
           payloads.push(JSON.parse(params.input[1]!.content));
           return { output_parsed: draft(), usage: { input_tokens: 1, output_tokens: 2 } };
         },
@@ -268,6 +270,11 @@ describe("OpenAI lesson gateway", () => {
     expect(JSON.stringify(payloads[0])).not.toContain("relatedCoverage");
     expect(JSON.stringify(payloads[0])).not.toContain("Relaterad hemlig rubrik");
     expect(JSON.stringify(payloads[0])).not.toContain("hemlig relaterad text");
+    expect(requests[0]?.max_output_tokens).toBe(8_000);
+    expect(result.annotations).toHaveLength(6);
+    expect(result.originalSentenceNotes.every((note) =>
+      note.annotationIds.every((id) => result.annotations.some((annotation) => annotation.id === id)),
+    )).toBe(true);
   });
 
   it("requires complete fact-check claim IDs and verbatim short primary-source evidence", async () => {
@@ -299,7 +306,17 @@ function draft() {
     summaries: lesson.summaries,
     factPoints: lesson.factPoints,
     originalSentenceNotes: lesson.originalSentenceNotes.map(({ quote, annotationIds }) => ({ quote, annotationIds })),
-    annotations: Array.from({ length: 6 }, (_, index) => ({ ...annotation("phrase"), id: `phrase:träda-i-kraft-${index}`, canonical: `träda-i-kraft-${index}` })),
+    annotations: [
+      { ...annotation("phrase"), id: "phrase:träda-i-kraft-0", canonical: "träda-i-kraft-0" },
+      ...Array.from({ length: 5 }, (_, index) => ({
+        ...annotation(),
+        id: `vocabulary:studieord${index}`,
+        canonical: `studieord${index}`,
+        targets: [`studieord${index}`],
+        surface: `studieord${index}`,
+        lemma: `studieord${index}`,
+      })),
+    ],
     id: "model-controlled-id",
     sourceUrl: "https://evil.test/",
   };

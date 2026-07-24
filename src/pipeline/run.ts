@@ -1,5 +1,6 @@
 import type { DailyLesson, LessonArticle, Source } from "../contracts/content";
 import type { Fetcher, FingerprintedArticle, SourceAdapter, SourceArticle, UrlAccessGuard } from "../contracts/transient";
+import { ZodError } from "zod";
 import type { AiGateway } from "./ai/gateway";
 import { stockholmDateTime } from "./clock";
 import { deduplicateArticles } from "./dedupe/cluster";
@@ -34,10 +35,73 @@ export interface RunOptions {
   force?: boolean;
   dateOverride?: string;
   dependencies?: RunDependencies;
+  onDiagnostic?: (diagnostic: PipelineDiagnostic) => void;
 }
+
+export type PipelineDiagnostic =
+  | {
+      type: "lesson-generation-failure";
+      candidateId: string;
+      source: Source;
+      scope: FingerprintedArticle["fingerprint"]["scope"];
+      failure: {
+        category: "validation" | "openai" | "runtime";
+        code: string;
+        name?: string;
+        status?: number;
+        issues?: Array<{ code: string; path: Array<string | number> }>;
+      };
+    }
+  | {
+      type: "daily-pipeline-summary";
+      date: string;
+      discoveredArticles: number;
+      queuedCandidates: number;
+      domesticCandidates: number;
+      internationalCandidates: number;
+      attemptedCandidates: number;
+      generatedLessons: number;
+      status: DailyLesson["status"];
+      sourceHealth: DailyLesson["sourceHealth"];
+    };
 
 function sourceHealth(): Record<Source, "ok" | "partial" | "failed"> {
   return { svt: "ok", aftonbladet: "ok", dn: "ok" };
+}
+
+function safeFailure(error: unknown): Extract<PipelineDiagnostic, { type: "lesson-generation-failure" }>["failure"] {
+  if (error instanceof ZodError) {
+    return {
+      category: "validation",
+      code: "zod-invalid-structured-output",
+      issues: error.issues.slice(0, 12).map((issue) => ({
+        code: issue.code,
+        path: issue.path.filter((part): part is string | number =>
+          typeof part === "string" || typeof part === "number"),
+      })),
+    };
+  }
+
+  if (!(error instanceof Error)) return { category: "runtime", code: "unknown-non-error" };
+  const internalCode = error.message.match(/^(?:lesson|openai)-[a-z0-9-]+/u)?.[0];
+  const rawStatus = "status" in error ? Number((error as Error & { status?: unknown }).status) : 0;
+  const status = Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599 ? rawStatus : undefined;
+  const rawApiCode = "code" in error ? (error as Error & { code?: unknown }).code : undefined;
+  const apiCode = typeof rawApiCode === "string" && /^[a-z0-9_-]{1,80}$/u.test(rawApiCode)
+    ? rawApiCode
+    : undefined;
+  const name = /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(error.name) ? error.name : undefined;
+  const category = internalCode?.startsWith("lesson-")
+    ? "validation"
+    : internalCode?.startsWith("openai-") || status !== undefined
+      ? "openai"
+      : "runtime";
+  return {
+    category,
+    code: internalCode ?? apiCode ?? "unclassified-error",
+    ...(name === undefined ? {} : { name }),
+    ...(status === undefined ? {} : { status }),
+  };
 }
 
 function inPublicationWindow(article: SourceArticle, now: Date): boolean {
@@ -131,7 +195,14 @@ export async function runDailyPipeline(options: RunOptions): Promise<DailyLesson
       const lesson = cached ?? await generate(selected, options.gateway);
       generated.push({ selected, lesson });
       return true;
-    } catch {
+    } catch (error) {
+      options.onDiagnostic?.({
+        type: "lesson-generation-failure",
+        candidateId: selected.article.id,
+        source: selected.article.source,
+        scope: selected.fingerprint.scope,
+        failure: safeFailure(error),
+      });
       // Do not log model output or source text; deterministic fallback candidates remain eligible.
       return false;
     }
@@ -169,6 +240,18 @@ export async function runDailyPipeline(options: RunOptions): Promise<DailyLesson
       : "Fewer than two fully validated public lessons were available.",
     articles: ready ? generated.map(({ lesson: article }) => article) : [],
   };
+  options.onDiagnostic?.({
+    type: "daily-pipeline-summary",
+    date,
+    discoveredArticles: articles.length,
+    queuedCandidates: queue.length,
+    domesticCandidates: domesticQueue.length,
+    internationalCandidates: internationalQueue.length,
+    attemptedCandidates: attempted.size,
+    generatedLessons: generated.length,
+    status: lesson.status,
+    sourceHealth: health,
+  });
   if (ready) {
     await repository.publishDaily({
       lesson,

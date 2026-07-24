@@ -6,7 +6,7 @@ import type { DailyLesson, LessonArticle } from "../../src/contracts/content";
 import type { CandidateLink, Fetcher, FingerprintedArticle, SourceArticle, UrlAccessGuard } from "../../src/contracts/transient";
 import { stockholmDateTime } from "../../src/pipeline/clock";
 import { FileRepository } from "../../src/pipeline/persistence/repository";
-import { runDailyPipeline } from "../../src/pipeline/run";
+import { runDailyPipeline, type PipelineDiagnostic } from "../../src/pipeline/run";
 
 const NOW = new Date("2026-07-23T05:00:00.000Z");
 const BODY = Array.from({ length: 190 }, (_, index) => `källa${index}`).join(" ");
@@ -216,6 +216,48 @@ describe("daily pipeline infrastructure", () => {
     const result = await runDailyPipeline({ root: directory, now: NOW, gateway: gateway(new Set(["a-fails"])), dependencies });
     expect(result?.status).toBe("ready");
     expect(result?.articles.map((article) => article.id)).toEqual(expect.arrayContaining(["lesson-b-sweden", "lesson-c-world"]));
+  });
+
+  it("reports safe failure codes without logging model or source content", async () => {
+    const directory = await root();
+    const articles = [
+      sourceArticle("a-domestic", "svt", "sweden"),
+      sourceArticle("b-international", "dn", "international"),
+    ];
+    const { dependencies } = ports(articles);
+    const failingGateway = gateway();
+    failingGateway.generateLesson = async () => {
+      throw new Error("lesson-annotation-unlinked:secret-model-output");
+    };
+    const diagnostics: PipelineDiagnostic[] = [];
+
+    const result = await runDailyPipeline({
+      root: directory,
+      now: NOW,
+      gateway: failingGateway,
+      dependencies,
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    expect(result?.status).toBe("delayed");
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "lesson-generation-failure",
+        candidateId: "a-domestic",
+        failure: expect.objectContaining({
+          category: "validation",
+          code: "lesson-annotation-unlinked",
+        }),
+      }),
+      expect.objectContaining({
+        type: "daily-pipeline-summary",
+        attemptedCandidates: 1,
+        generatedLessons: 0,
+        status: "delayed",
+      }),
+    ]));
+    expect(JSON.stringify(diagnostics)).not.toContain("secret-model-output");
+    expect(JSON.stringify(diagnostics)).not.toContain(BODY);
   });
 
   it("tries an international backup before an additional domestic candidate", async () => {

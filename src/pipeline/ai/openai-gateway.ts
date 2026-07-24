@@ -4,6 +4,7 @@ import { z } from "zod";
 import { AnnotationSchema, LessonArticleSchema, ScopeSchema, TopicSchema, countSwedishWords } from "../../contracts/content";
 import type { EventFingerprint } from "../../contracts/transient";
 import { decorateParagraphs } from "../lessons/decorate";
+import { annotationAppearsInText } from "../lessons/validate";
 import type { AiGateway, DuplicatePair, DuplicateReview, LessonFactClaim } from "./gateway";
 import { DUPLICATE_SYSTEM, FACT_CHECK_SYSTEM, FINGERPRINT_SYSTEM, LESSON_SYSTEM } from "./prompts";
 
@@ -35,6 +36,9 @@ const FactCheckBatchSchema = z.object({ items: z.array(z.object({
 })) });
 
 type ParseClient = Pick<OpenAI, "responses">;
+const DEFAULT_MODEL = "gpt-5.6-luna";
+const DEFAULT_MAX_OUTPUT_TOKENS = 4_500;
+const LESSON_MAX_OUTPUT_TOKENS = 8_000;
 
 export interface OpenAiGatewayOptions {
   apiKey?: string;
@@ -77,16 +81,23 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
   const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
   if (!options.client && !apiKey) throw new Error("openai-api-key-required");
   const client = options.client ?? new OpenAI({ apiKey, maxRetries: 0 });
-  const model = options.model ?? "gpt-5.4-mini";
+  const model = options.model ?? DEFAULT_MODEL;
   const retryDelayMs = options.retryDelayMs ?? 2_000;
 
-  async function parse<T>(schema: z.ZodType<T>, name: string, system: string, payload: unknown): Promise<T> {
+  async function parse<T>(
+    schema: z.ZodType<T>,
+    name: string,
+    system: string,
+    payload: unknown,
+    maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
+  ): Promise<T> {
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const response = await client.responses.parse({
           model,
-          max_output_tokens: 4_500,
+          max_output_tokens: maxOutputTokens,
+          ...(model.startsWith("gpt-5.6") ? { reasoning: { effort: "none" as const } } : {}),
           input: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(payload) }],
           text: { format: zodTextFormat(schema, name) },
         }, { maxRetries: 0 });
@@ -133,8 +144,30 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
           eventFingerprint: input.fingerprint,
           repairReason,
         },
+        LESSON_MAX_OUTPUT_TOKENS,
       ));
       const studyParagraphs = decorateParagraphs(draft.paragraphs, draft.annotations);
+      const linkedAnnotationIds = new Set(
+        studyParagraphs.flatMap((paragraph) =>
+          paragraph.segments.flatMap((segment) => segment.annotationId ? [segment.annotationId] : []),
+        ),
+      );
+      const linkedAnnotations = draft.annotations.filter((annotation) => linkedAnnotationIds.has(annotation.id));
+      if (linkedAnnotations.length < 6) {
+        throw new Error(`lesson-annotation-coverage:${linkedAnnotations.length}`);
+      }
+      const originalSentenceNotes = draft.originalSentenceNotes.map((note) => {
+        const matchingIds = linkedAnnotations
+          .filter((annotation) => annotationAppearsInText(annotation, note.quote))
+          .map((annotation) => annotation.id);
+        if (matchingIds.length === 0) throw new Error("lesson-quote-annotation-unbound");
+        const requestedMatchingIds = note.annotationIds.filter((id) => matchingIds.includes(id));
+        return {
+          quote: note.quote,
+          annotationIds: requestedMatchingIds.length > 0 ? requestedMatchingIds : matchingIds,
+          sourceUrl: input.article.canonicalUrl,
+        };
+      });
       return LessonArticleSchema.parse({
         id: input.article.id,
         eventFingerprint: input.fingerprint.canonical,
@@ -151,8 +184,8 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
         wordCount: countSwedishWords(draft.paragraphs.join("\n\n")),
         summaries: draft.summaries,
         factPoints: draft.factPoints,
-        originalSentenceNotes: draft.originalSentenceNotes.map((note) => ({ ...note, sourceUrl: input.article.canonicalUrl })),
-        annotations: draft.annotations,
+        originalSentenceNotes,
+        annotations: linkedAnnotations,
         relatedCoverage: input.related.map(({ source, title, canonicalUrl }) => ({ source, title, url: canonicalUrl })),
         generationModel: model,
         contentHash: input.article.contentHash,
@@ -165,6 +198,7 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
         "lesson_fact_check",
         FACT_CHECK_SYSTEM,
         { sourceBody, claims },
+        LESSON_MAX_OUTPUT_TOKENS,
       ));
       assertFactClaimIds(claims, result.items.map((item) => item.claimId));
       for (const item of result.items) {

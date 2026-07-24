@@ -7,8 +7,9 @@ const article: SourceArticle = { id: "one", source: "svt", url: "https://svt.se/
 
 function clientWith(outputs: unknown[]) {
   let calls = 0;
+  const requestParams: unknown[] = [];
   const requestOptions: unknown[] = [];
-  return { calls: () => calls, requestOptions, responses: { parse: async (_params: unknown, options: unknown) => { requestOptions.push(options); const output = outputs[calls++]; if (output instanceof Error) throw output; return { output_parsed: output, usage: { input_tokens: 1, output_tokens: 2 } }; } } };
+  return { calls: () => calls, requestParams, requestOptions, responses: { parse: async (params: unknown, options: unknown) => { requestParams.push(params); requestOptions.push(options); const output = outputs[calls++]; if (output instanceof Error) throw output; return { output_parsed: output, usage: { input_tokens: 1, output_tokens: 2 } }; } } };
 }
 
 describe("OpenAI news gateway", () => {
@@ -52,6 +53,16 @@ describe("OpenAI news gateway", () => {
     const client = clientWith([]);
     await expect(createOpenAiGateway({ apiKey: "test", client: client as never }).reviewPairs([])).resolves.toEqual([]);
     expect(client.calls()).toBe(0);
+  });
+
+  it("uses the configured Luna default with the previous model's effective reasoning", async () => {
+    const client = clientWith([{ items: [validFingerprint()] }]);
+    await createOpenAiGateway({ apiKey: "test", client: client as never }).fingerprint([article]);
+    expect(client.requestParams[0]).toMatchObject({
+      model: "gpt-5.6-luna",
+      max_output_tokens: 4_500,
+      reasoning: { effort: "none" },
+    });
   });
 });
 
