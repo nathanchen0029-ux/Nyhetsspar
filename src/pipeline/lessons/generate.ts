@@ -24,6 +24,12 @@ export function lessonFactClaims(lesson: Awaited<ReturnType<typeof validateLesso
 function lessonRepairReason(error: Error): string {
   const internalReason = "repairReason" in error ? (error as Error & { repairReason?: unknown }).repairReason : undefined;
   if (typeof internalReason === "string" && internalReason.length > 0) return internalReason;
+  if (error.message.startsWith("lesson-lemma-mismatch:")) {
+    return `${error.message}; for every vocabulary annotation, set canonical to exactly the same string as lemma`;
+  }
+  if (error.message === "lesson-long-source-overlap") {
+    return "lesson-long-source-overlap; rewrite the study paragraphs in original Swedish wording and do not repeat any sequence of 26 or more normalized words from sourceArticle";
+  }
   if (!(error instanceof ZodError)) return error.message;
   const wordCountFailure = error.issues.some((issue) =>
     issue.path.some((part) => part === "wordCount" || part === "studyParagraphs" || part === "paragraphs"));
@@ -40,7 +46,8 @@ function lessonRepairReason(error: Error): string {
 
 export async function generateValidatedLesson(selected: FingerprintedArticle, gateway: AiGateway) {
   let repairReason: string | undefined;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const attemptedRepairs = new Set<string>();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     let validated;
     try {
       const lesson = await gateway.generateLesson({
@@ -52,8 +59,11 @@ export async function generateValidatedLesson(selected: FingerprintedArticle, ga
       validated = validateLessonAgainstSource(lesson, selected.article.body, selected.article.canonicalUrl);
     } catch (error) {
       const repairable = error instanceof ZodError || (error instanceof Error && error.message.startsWith("lesson-"));
-      if (!repairable || attempt === 1) throw error;
-      repairReason = lessonRepairReason(error);
+      if (!repairable) throw error;
+      const nextRepairReason = lessonRepairReason(error);
+      if (attempt === 2 || attemptedRepairs.has(nextRepairReason)) throw error;
+      attemptedRepairs.add(nextRepairReason);
+      repairReason = nextRepairReason;
       continue;
     }
     try {
@@ -61,8 +71,11 @@ export async function generateValidatedLesson(selected: FingerprintedArticle, ga
       return validated;
     } catch (error) {
       const repairable = error instanceof Error && error.message.startsWith("lesson-unsupported-fact:");
-      if (!repairable || attempt === 1) throw error;
-      repairReason = error.message;
+      if (!repairable) throw error;
+      const nextRepairReason = lessonRepairReason(error);
+      if (attempt === 2 || attemptedRepairs.has(nextRepairReason)) throw error;
+      attemptedRepairs.add(nextRepairReason);
+      repairReason = nextRepairReason;
     }
   }
   throw new Error("lesson-generation-failed");

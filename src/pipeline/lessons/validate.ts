@@ -38,6 +38,19 @@ function numericTokens(text: string): Set<string> {
   return new Set(text.normalize("NFKC").match(numericToken) ?? []);
 }
 
+function longSourceOverlapError(words: readonly string[]): Error {
+  const error = new Error("lesson-long-source-overlap");
+  Object.defineProperty(error, "repairReason", {
+    value: [
+      "lesson-long-source-overlap;",
+      "rewrite the study paragraphs in original Swedish wording while preserving only supported facts;",
+      "do not repeat any sequence of 26 or more normalized words from sourceArticle;",
+      `the copied sequence that must be rewritten is: ${words.join(" ")}`,
+    ].join(" "),
+  });
+  return error;
+}
+
 export function validateLessonAgainstSource(input: LessonArticle, sourceBody: string, sourceUrl: string): LessonArticle {
   const actualCount = countSwedishWords(lessonText(input));
   if (actualCount < 300 || actualCount > 500 || input.wordCount !== actualCount) {
@@ -105,7 +118,8 @@ export function validateLessonAgainstSource(input: LessonArticle, sourceBody: st
   const sourceWords = normalizedWords(sourceBody);
   const studyWords = normalizedWords(study).join(" ");
   for (let index = 0; index <= sourceWords.length - 26; index += 1) {
-    if (studyWords.includes(sourceWords.slice(index, index + 26).join(" "))) throw new Error("lesson-long-source-overlap");
+    const sourceSequence = sourceWords.slice(index, index + 26);
+    if (studyWords.includes(sourceSequence.join(" "))) throw longSourceOverlapError(sourceSequence);
   }
   return lesson;
 }

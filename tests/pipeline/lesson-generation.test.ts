@@ -135,7 +135,16 @@ describe("lesson validation", () => {
     const overlap = validLesson();
     overlap.studyParagraphs[0]!.segments[0]!.text = `${sourceWords} `;
     overlap.studyParagraphs[0]!.segments[2]!.text = ` ${words(271)}`;
-    expect(() => validateLessonAgainstSource(overlap, `${sourceBody} ${sourceWords}`, sourceUrl)).toThrow("lesson-long-source-overlap");
+    const overlapError = (() => {
+      try {
+        validateLessonAgainstSource(overlap, `${sourceBody} ${sourceWords}`, sourceUrl);
+        return undefined;
+      } catch (error) {
+        return error as Error & { repairReason?: string };
+      }
+    })();
+    expect(overlapError?.message).toBe("lesson-long-source-overlap");
+    expect(overlapError?.repairReason).toContain(sourceWords);
   });
 
   it("rejects duplicate, dangling, and wrongly decorated annotations", () => {
@@ -197,6 +206,27 @@ describe("validated lesson generation", () => {
     expect(reasons).toEqual([undefined, "lesson-schema-invalid:required:invalid_type"]);
   });
 
+  it("allows repairs for two different validation failures without repeating the same repair", async () => {
+    const invalidWordCount = validLesson();
+    invalidWordCount.wordCount = 299;
+    const reasons: Array<string | undefined> = [];
+    const gateway = {
+      generateLesson: async (_input: unknown, reason?: string) => {
+        reasons.push(reason);
+        if (reasons.length === 1) return invalidWordCount;
+        if (reasons.length === 2) throw new Error("lesson-lemma-mismatch:vocabulary:test");
+        return validLesson();
+      },
+      verifyLessonFacts: async () => undefined,
+    } as unknown as AiGateway;
+    await expect(generateValidatedLesson(selected(), gateway)).resolves.toMatchObject({ id: "one" });
+    expect(reasons).toEqual([
+      undefined,
+      "lesson-word-count:300",
+      "lesson-lemma-mismatch:vocabulary:test; for every vocabulary annotation, set canonical to exactly the same string as lemma",
+    ]);
+  });
+
   it("gives an explicit buffered word-count instruction when repairing a short structured draft", async () => {
     const reasons: Array<string | undefined> = [];
     const shortDraftError = z.object({ studyParagraphs: z.string().min(300) }).safeParse({ studyParagraphs: "för kort" }).error;
@@ -229,6 +259,27 @@ describe("validated lesson generation", () => {
     expect(reasons).toEqual([undefined, "lesson-unsupported-fact:summary-sv"]);
     expect(checks).toBe(2);
     expect(claimIds).toEqual(expect.arrayContaining(["study-title", "study-p1-s1", "summary-sv", "summary-zh", "summary-en", "fact-point-1", "fact-point-2"]));
+  });
+
+  it("forwards the unsupported claim text to the next lesson draft", async () => {
+    const reasons: Array<string | undefined> = [];
+    let checks = 0;
+    const unsupported = new Error("lesson-unsupported-fact:summary-sv");
+    Object.defineProperty(unsupported, "repairReason", {
+      value: "lesson-unsupported-fact:summary-sv; rewrite this exact claim: En okänd person orsakade beslutet.",
+    });
+    const gateway = {
+      generateLesson: async (_input: unknown, reason?: string) => {
+        reasons.push(reason);
+        return validLesson();
+      },
+      verifyLessonFacts: async () => {
+        checks += 1;
+        if (checks === 1) throw unsupported;
+      },
+    } as unknown as AiGateway;
+    await expect(generateValidatedLesson(selected(), gateway)).resolves.toMatchObject({ id: "one" });
+    expect(reasons[1]).toContain("En okänd person orsakade beslutet.");
   });
 
   it("does not repair when fact verification has a permanent transport error", async () => {
@@ -316,6 +367,17 @@ describe("OpenAI lesson gateway", () => {
     )).toBe(true);
   });
 
+  it("canonicalizes vocabulary annotations to their lemma before validation", async () => {
+    const output = draft();
+    const vocabulary = output.annotations.find((item) => item.kind === "vocabulary");
+    if (!vocabulary || vocabulary.kind !== "vocabulary") throw new Error("test-vocabulary-missing");
+    vocabulary.canonical = "fel-kanonisk-form";
+    const client = { responses: { parse: async () => ({ output_parsed: output, usage: { input_tokens: 1, output_tokens: 2 } }) } };
+    const result = await createOpenAiGateway({ apiKey: "test", client: client as never }).generateLesson(selected());
+    const normalized = result.annotations.find((item) => item.id === vocabulary.id);
+    expect(normalized?.canonical).toBe(vocabulary.lemma);
+  });
+
   it("requires complete fact-check claim IDs and verbatim short primary-source evidence", async () => {
     const client = { responses: { parse: async () => ({ output_parsed: { items: [] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
     const gateway = createOpenAiGateway({ apiKey: "test", client: client as never });
@@ -372,7 +434,7 @@ describe("OpenAI lesson gateway", () => {
   });
 
   it("treats common Unicode quote and dash variants as the same source evidence", async () => {
-    const punctuationClient = { responses: { parse: async () => ({ output_parsed: { items: [{ claimId: "claim-1", supported: true, evidence: "Statsministern sade “ja” – i dag.", reason: "stöds" }] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
+    const punctuationClient = { responses: { parse: async () => ({ output_parsed: { items: [{ claimId: "claim-1", supported: true, evidence: "statsministern sade ja i dag", reason: "stöds" }] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
     const gateway = createOpenAiGateway({ apiKey: "test", client: punctuationClient as never });
     await expect(gateway.verifyLessonFacts('Statsministern sade "ja" - i dag.', [{ id: "claim-1", text: "Statsministern sade ja." }])).resolves.toBeUndefined();
   });

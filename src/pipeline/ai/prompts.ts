@@ -21,6 +21,7 @@ export const LESSON_SYSTEM = [
   "Use no facts beyond the supplied source text.",
   "Never add unsupported numbers, people, causal claims, or background facts; omit uncertain details.",
   "Every study sentence, the study title, all summaries, and every fact point must be directly supportable from sourceArticle; do not add interpretation or generic background.",
+  "Paraphrase the lesson in original Swedish wording; never copy a sequence of 26 or more words from sourceArticle into the study paragraphs.",
   "Return exactly 4 Swedish study paragraphs, each containing 90 to 110 Swedish words, for a total of 360 to 440 words safely inside the required 300-to-500-word validation range.",
   "Count only the Swedish study-paragraph text before returning; titles, summaries, quotes, and annotations do not count.",
   "Provide Swedish, Chinese, and English summaries.",
@@ -39,6 +40,7 @@ export const FACT_CHECK_SYSTEM = [
   "Do not use related coverage, titles, prior knowledge, or inference beyond the primary source.",
   "Return one result for every claim ID.",
   "Mark supported true only when the claim is supported by the source, and copy a short verbatim evidence substring directly from sourceBody.",
-  "Preserve the evidence spelling and punctuation; source line breaks or repeated whitespace may be returned as a single space.",
+  "Select evidence as one contiguous sourceBody substring; do not paraphrase it or alter its spelling, capitalization, or punctuation.",
+  "Source line breaks or repeated whitespace may be returned as a single space.",
   "When repairReason is present, correct that verifier-format failure while still returning one result for every claim ID.",
 ].join(" ");

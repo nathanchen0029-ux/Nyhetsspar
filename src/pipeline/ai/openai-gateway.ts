@@ -89,8 +89,22 @@ function normalizedVerbatimText(text: string): string {
     .replace(/[‘’]/gu, "'")
     .replace(/[“”]/gu, "\"")
     .replace(/[‐‑‒–—−]/gu, "-")
+    .toLocaleLowerCase("sv")
     .replace(/\s+/gu, " ")
     .trim();
+}
+
+function normalizedEvidenceWords(text: string): string {
+  return normalizedVerbatimText(text).match(/[\p{L}\p{N}]+/gu)?.join(" ") ?? "";
+}
+
+function evidenceAppearsInSource(sourceBody: string, evidence: string): boolean {
+  const normalizedSource = normalizedVerbatimText(sourceBody);
+  const normalizedEvidence = normalizedVerbatimText(evidence);
+  if (normalizedSource.includes(normalizedEvidence)) return true;
+  const sourceWords = normalizedEvidenceWords(sourceBody);
+  const evidenceWords = normalizedEvidenceWords(evidence);
+  return evidenceWords.length > 0 && ` ${sourceWords} `.includes(` ${evidenceWords} `);
 }
 
 function wholeTargetIndex(text: string, target: string): number | undefined {
@@ -184,7 +198,6 @@ function validateFactCheckResult(
   items: z.infer<typeof FactCheckBatchSchema>["items"],
 ): void {
   assertFactClaimIds(claims, items.map((item) => item.claimId));
-  const normalizedSource = normalizedVerbatimText(sourceBody);
   const claimsById = new Map(claims.map((claim) => [claim.id, claim.text]));
   for (const item of items) {
     if (!item.supported) {
@@ -199,10 +212,17 @@ function validateFactCheckResult(
     }
     const evidenceWords = countSwedishWords(item.evidence);
     if (evidenceWords === 0 || evidenceWords > 25) throw new Error(`lesson-fact-evidence-too-long:${item.claimId}`);
-    if (!normalizedSource.includes(normalizedVerbatimText(item.evidence))) {
+    if (!evidenceAppearsInSource(sourceBody, item.evidence)) {
       throw new Error(`lesson-fact-evidence-not-in-source:${item.claimId}`);
     }
   }
+}
+
+function canonicalizeVocabularyAnnotations(annotations: readonly Annotation[]): Annotation[] {
+  return annotations.map((annotation) =>
+    annotation.kind === "vocabulary" && annotation.canonical !== annotation.lemma
+      ? { ...annotation, canonical: annotation.lemma }
+      : annotation);
 }
 
 export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
@@ -283,13 +303,14 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
           ...(model.startsWith("gpt-5.6") ? { verbosity: "high" as const } : {}),
         },
       ));
-      const studyParagraphs = decorateParagraphs(draft.paragraphs, draft.annotations);
+      const annotations = canonicalizeVocabularyAnnotations(draft.annotations);
+      const studyParagraphs = decorateParagraphs(draft.paragraphs, annotations);
       const linkedAnnotationIds = new Set(
         studyParagraphs.flatMap((paragraph) =>
           paragraph.segments.flatMap((segment) => segment.annotationId ? [segment.annotationId] : []),
         ),
       );
-      const linkedAnnotations = draft.annotations.filter((annotation) => linkedAnnotationIds.has(annotation.id));
+      const linkedAnnotations = annotations.filter((annotation) => linkedAnnotationIds.has(annotation.id));
       if (linkedAnnotations.length < 5) {
         throw new Error(`lesson-annotation-coverage:${linkedAnnotations.length}`);
       }
@@ -325,7 +346,7 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
     async verifyLessonFacts(sourceBody, claims) {
       if (claims.length === 0) return;
       let repairReason: string | undefined;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
         const result = FactCheckBatchSchema.parse(await parse(
           FactCheckBatchSchema,
           "lesson_fact_check",
@@ -338,7 +359,7 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
           return;
         } catch (error) {
           const evidenceFailure = error instanceof Error && error.message.startsWith("lesson-fact-evidence-");
-          if (!evidenceFailure || attempt === 1) throw error;
+          if (!evidenceFailure || attempt === 2) throw error;
           repairReason = `${error.message}; copy a short evidence substring directly from sourceBody without rewriting it`;
         }
       }
