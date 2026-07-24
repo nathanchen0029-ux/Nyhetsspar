@@ -273,7 +273,7 @@ describe("validated lesson generation", () => {
 describe("OpenAI lesson gateway", () => {
   it("assembles trusted metadata and safe ID while exposing no related body to the model", async () => {
     const payloads: unknown[] = [];
-    const requests: Array<{ max_output_tokens?: number; input: Array<{ content: string }>; text?: { verbosity?: string } }> = [];
+    const requests: Array<{ max_output_tokens?: number; input: Array<{ content: string }>; reasoning?: { effort?: string }; text?: { verbosity?: string } }> = [];
     const client = {
       responses: {
         parse: async (params: { input: Array<{ content: string }> }) => {
@@ -289,6 +289,7 @@ describe("OpenAI lesson gateway", () => {
     expect(JSON.stringify(payloads[0])).not.toContain("Relaterad hemlig rubrik");
     expect(JSON.stringify(payloads[0])).not.toContain("hemlig relaterad text");
     expect(requests[0]?.max_output_tokens).toBe(8_000);
+    expect(requests[0]?.reasoning?.effort).toBe("low");
     expect(requests[0]?.text?.verbosity).toBe("high");
     expect(result.annotations).toHaveLength(6);
     expect(result.originalSentenceNotes.every((note) =>
@@ -326,7 +327,10 @@ describe("OpenAI lesson gateway", () => {
 
     const unsupportedClient = { responses: { parse: async () => ({ output_parsed: { items: [{ claimId: "claim-1", supported: false, evidence: "Kommunerna får nya regler.", reason: "personen finns inte i källan" }] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
     const unsupportedGateway = createOpenAiGateway({ apiKey: "test", client: unsupportedClient as never });
-    await expect(unsupportedGateway.verifyLessonFacts(sourceBody, [{ id: "claim-1", text: "En okänd person orsakade beslutet." }])).rejects.toThrow("lesson-unsupported-fact:claim-1");
+    const unsupportedError = await unsupportedGateway.verifyLessonFacts(sourceBody, [{ id: "claim-1", text: "En okänd person orsakade beslutet." }])
+      .then(() => undefined, (error: unknown) => error as Error & { repairReason?: string });
+    expect(unsupportedError?.message).toBe("lesson-unsupported-fact:claim-1");
+    expect(unsupportedError?.repairReason).toContain("En okänd person orsakade beslutet.");
 
     const longEvidence = words(26);
     const longEvidenceClient = { responses: { parse: async () => ({ output_parsed: { items: [{ claimId: "claim-1", supported: true, evidence: longEvidence, reason: "för långt" }] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
@@ -365,6 +369,12 @@ describe("OpenAI lesson gateway", () => {
     expect(attempts).toBe(2);
     expect(payloads[0]?.repairReason).toBeUndefined();
     expect(payloads[1]?.repairReason).toContain("lesson-fact-evidence-not-in-source:claim-1");
+  });
+
+  it("treats common Unicode quote and dash variants as the same source evidence", async () => {
+    const punctuationClient = { responses: { parse: async () => ({ output_parsed: { items: [{ claimId: "claim-1", supported: true, evidence: "Statsministern sade “ja” – i dag.", reason: "stöds" }] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
+    const gateway = createOpenAiGateway({ apiKey: "test", client: punctuationClient as never });
+    await expect(gateway.verifyLessonFacts('Statsministern sade "ja" - i dag.', [{ id: "claim-1", text: "Statsministern sade ja." }])).resolves.toBeUndefined();
   });
 });
 

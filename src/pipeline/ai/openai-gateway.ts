@@ -40,6 +40,12 @@ const DEFAULT_MODEL = "gpt-5.6-luna";
 const DEFAULT_MAX_OUTPUT_TOKENS = 4_500;
 const LESSON_MAX_OUTPUT_TOKENS = 8_000;
 
+interface ParseOptions {
+  maxOutputTokens?: number;
+  reasoningEffort?: "none" | "low";
+  verbosity?: "low" | "medium" | "high";
+}
+
 export interface OpenAiGatewayOptions {
   apiKey?: string;
   model?: string;
@@ -78,7 +84,13 @@ function assertFactClaimIds(expectedClaims: readonly LessonFactClaim[], received
 }
 
 function normalizedVerbatimText(text: string): string {
-  return text.normalize("NFKC").replace(/\s+/gu, " ").trim();
+  return text
+    .normalize("NFKC")
+    .replace(/[‘’]/gu, "'")
+    .replace(/[“”]/gu, "\"")
+    .replace(/[‐‑‒–—−]/gu, "-")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function wholeTargetIndex(text: string, target: string): number | undefined {
@@ -173,8 +185,18 @@ function validateFactCheckResult(
 ): void {
   assertFactClaimIds(claims, items.map((item) => item.claimId));
   const normalizedSource = normalizedVerbatimText(sourceBody);
+  const claimsById = new Map(claims.map((claim) => [claim.id, claim.text]));
   for (const item of items) {
-    if (!item.supported) throw new Error(`lesson-unsupported-fact:${item.claimId}`);
+    if (!item.supported) {
+      const error = new Error(`lesson-unsupported-fact:${item.claimId}`);
+      const claimText = claimsById.get(item.claimId);
+      if (claimText) {
+        Object.defineProperty(error, "repairReason", {
+          value: `lesson-unsupported-fact:${item.claimId}; remove or rewrite this unsupported claim using only sourceArticle facts: ${claimText.slice(0, 500)}`,
+        });
+      }
+      throw error;
+    }
     const evidenceWords = countSwedishWords(item.evidence);
     if (evidenceWords === 0 || evidenceWords > 25) throw new Error(`lesson-fact-evidence-too-long:${item.claimId}`);
     if (!normalizedSource.includes(normalizedVerbatimText(item.evidence))) {
@@ -195,18 +217,22 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
     name: string,
     system: string,
     payload: unknown,
-    maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
-    verbosity?: "low" | "medium" | "high",
+    options: ParseOptions = {},
   ): Promise<T> {
+    const maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+    const reasoningEffort = options.reasoningEffort ?? "none";
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const response = await client.responses.parse({
           model,
           max_output_tokens: maxOutputTokens,
-          ...(model.startsWith("gpt-5.6") ? { reasoning: { effort: "none" as const } } : {}),
+          ...(model.startsWith("gpt-5.6") ? { reasoning: { effort: reasoningEffort } } : {}),
           input: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(payload) }],
-          text: { format: zodTextFormat(schema, name), ...(verbosity === undefined ? {} : { verbosity }) },
+          text: {
+            format: zodTextFormat(schema, name),
+            ...(options.verbosity === undefined ? {} : { verbosity: options.verbosity }),
+          },
         }, { maxRetries: 0 });
         if (!response.output_parsed) throw new Error(`openai-empty-structured-output:${name}`);
         const usage = response.usage;
@@ -251,8 +277,11 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
           eventFingerprint: input.fingerprint,
           repairReason,
         },
-        LESSON_MAX_OUTPUT_TOKENS,
-        model.startsWith("gpt-5.6") ? "high" : undefined,
+        {
+          maxOutputTokens: LESSON_MAX_OUTPUT_TOKENS,
+          reasoningEffort: "low",
+          ...(model.startsWith("gpt-5.6") ? { verbosity: "high" as const } : {}),
+        },
       ));
       const studyParagraphs = decorateParagraphs(draft.paragraphs, draft.annotations);
       const linkedAnnotationIds = new Set(
@@ -302,7 +331,7 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
           "lesson_fact_check",
           FACT_CHECK_SYSTEM,
           { sourceBody, claims, repairReason },
-          LESSON_MAX_OUTPUT_TOKENS,
+          { maxOutputTokens: LESSON_MAX_OUTPUT_TOKENS, reasoningEffort: "low" },
         ));
         try {
           validateFactCheckResult(sourceBody, claims, result.items);

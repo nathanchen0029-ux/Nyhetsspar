@@ -20,6 +20,7 @@ export const LESSON_SYSTEM = [
   "Do not simplify toward a CEFR target; only label observed difficulty.",
   "Use no facts beyond the supplied source text.",
   "Never add unsupported numbers, people, causal claims, or background facts; omit uncertain details.",
+  "Every study sentence, the study title, all summaries, and every fact point must be directly supportable from sourceArticle; do not add interpretation or generic background.",
   "Return exactly 4 Swedish study paragraphs, each containing 90 to 110 Swedish words, for a total of 360 to 440 words safely inside the required 300-to-500-word validation range.",
   "Count only the Swedish study-paragraph text before returning; titles, summaries, quotes, and annotations do not count.",
   "Provide Swedish, Chinese, and English summaries.",

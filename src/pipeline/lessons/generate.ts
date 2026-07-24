@@ -22,6 +22,8 @@ export function lessonFactClaims(lesson: Awaited<ReturnType<typeof validateLesso
 }
 
 function lessonRepairReason(error: Error): string {
+  const internalReason = "repairReason" in error ? (error as Error & { repairReason?: unknown }).repairReason : undefined;
+  if (typeof internalReason === "string" && internalReason.length > 0) return internalReason;
   if (!(error instanceof ZodError)) return error.message;
   const wordCountFailure = error.issues.some((issue) =>
     issue.path.some((part) => part === "wordCount" || part === "studyParagraphs" || part === "paragraphs"));
