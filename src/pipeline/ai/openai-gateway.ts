@@ -1,10 +1,10 @@
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
-import { AnnotationSchema, LessonArticleSchema, ScopeSchema, TopicSchema, countSwedishWords } from "../../contracts/content";
+import { AnnotationSchema, LessonArticleSchema, ScopeSchema, TopicSchema, countSwedishWords, type Annotation } from "../../contracts/content";
 import type { EventFingerprint } from "../../contracts/transient";
 import { decorateParagraphs } from "../lessons/decorate";
-import { annotationAppearsInText } from "../lessons/validate";
+import { annotationAppearsInText, quoteForms } from "../lessons/validate";
 import type { AiGateway, DuplicatePair, DuplicateReview, LessonFactClaim } from "./gateway";
 import { DUPLICATE_SYSTEM, FACT_CHECK_SYSTEM, FINGERPRINT_SYSTEM, LESSON_SYSTEM } from "./prompts";
 
@@ -79,6 +79,91 @@ function assertFactClaimIds(expectedClaims: readonly LessonFactClaim[], received
 
 function normalizedVerbatimText(text: string): string {
   return text.normalize("NFKC").replace(/\s+/gu, " ").trim();
+}
+
+function wholeTargetIndex(text: string, target: string): number | undefined {
+  if (!target) return undefined;
+  const escaped = target.normalize("NFKC").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&").replace(/\s+/gu, "\\s+");
+  const match = new RegExp(`(?:^|[^\\p{L}\\p{N}])(${escaped})(?![\\p{L}\\p{N}])`, "iu")
+    .exec(text.normalize("NFKC"));
+  return match ? match.index + match[0].length - match[1]!.length : undefined;
+}
+
+function excerptAround(text: string, characterIndex: number): string | undefined {
+  const tokens = Array.from(text.matchAll(/\S+/gu));
+  if (tokens.length === 0) return undefined;
+  const focus = tokens.findIndex((token) => {
+    const start = token.index;
+    return characterIndex >= start && characterIndex < start + token[0].length;
+  });
+  if (focus < 0) return undefined;
+  const start = Math.max(0, Math.min(focus - 12, tokens.length - 25));
+  const selected = tokens.slice(start, start + 25);
+  const first = selected[0];
+  const last = selected.at(-1);
+  if (!first || !last) return undefined;
+  return text.slice(first.index, last.index + last[0].length).trim();
+}
+
+function matchingAnnotationIds(annotations: readonly Annotation[], text: string): string[] {
+  return annotations.filter((annotation) => annotationAppearsInText(annotation, text)).map((annotation) => annotation.id);
+}
+
+function sourceExcerptCandidates(sourceBody: string, annotations: readonly Annotation[]): string[] {
+  const candidates: string[] = [];
+  const segmenter = new Intl.Segmenter("sv", { granularity: "sentence" });
+  for (const segment of segmenter.segment(sourceBody)) {
+    const sentence = segment.segment.trim();
+    if (!sentence) continue;
+    const matching = annotations.filter((annotation) => annotationAppearsInText(annotation, sentence));
+    if (matching.length === 0) continue;
+    if (countSwedishWords(sentence) <= 25) {
+      candidates.push(sentence);
+      continue;
+    }
+    for (const annotation of matching) {
+      const form = quoteForms(annotation).find((candidate) => wholeTargetIndex(sentence, candidate) !== undefined);
+      const index = form === undefined ? undefined : wholeTargetIndex(sentence, form);
+      const excerpt = index === undefined ? undefined : excerptAround(sentence, index);
+      if (excerpt && countSwedishWords(excerpt) <= 25 && annotationAppearsInText(annotation, excerpt)) {
+        candidates.push(excerpt);
+      }
+    }
+  }
+  return candidates;
+}
+
+function bindOriginalSentenceNotes(
+  notes: z.infer<typeof LessonDraftSchema>["originalSentenceNotes"],
+  sourceBody: string,
+  sourceUrl: string,
+  annotations: readonly Annotation[],
+): Array<{ quote: string; annotationIds: string[]; sourceUrl: string }> {
+  const bound: Array<{ quote: string; annotationIds: string[]; sourceUrl: string }> = [];
+  const quoteKeys = new Set<string>();
+  let totalWords = 0;
+  const add = (quote: string, requestedIds: readonly string[] = []): void => {
+    if (bound.length >= 2 || !sourceBody.includes(quote)) return;
+    const words = countSwedishWords(quote);
+    const key = normalizedVerbatimText(quote).toLocaleLowerCase("sv");
+    const matchingIds = matchingAnnotationIds(annotations, quote);
+    if (words === 0 || words > 25 || totalWords + words > 80 || quoteKeys.has(key) || matchingIds.length === 0) return;
+    const requestedMatchingIds = requestedIds.filter((id) => matchingIds.includes(id));
+    bound.push({
+      quote,
+      annotationIds: requestedMatchingIds.length > 0 ? requestedMatchingIds : matchingIds,
+      sourceUrl,
+    });
+    quoteKeys.add(key);
+    totalWords += words;
+  };
+
+  for (const note of notes) add(note.quote, note.annotationIds);
+  if (bound.length < 2) {
+    for (const quote of sourceExcerptCandidates(sourceBody, annotations)) add(quote);
+  }
+  if (bound.length < 2) throw new Error("lesson-quote-annotation-unbound");
+  return bound;
 }
 
 function validateFactCheckResult(
@@ -174,21 +259,15 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
         ),
       );
       const linkedAnnotations = draft.annotations.filter((annotation) => linkedAnnotationIds.has(annotation.id));
-      if (linkedAnnotations.length < 6) {
+      if (linkedAnnotations.length < 5) {
         throw new Error(`lesson-annotation-coverage:${linkedAnnotations.length}`);
       }
-      const originalSentenceNotes = draft.originalSentenceNotes.map((note) => {
-        const matchingIds = linkedAnnotations
-          .filter((annotation) => annotationAppearsInText(annotation, note.quote))
-          .map((annotation) => annotation.id);
-        if (matchingIds.length === 0) throw new Error("lesson-quote-annotation-unbound");
-        const requestedMatchingIds = note.annotationIds.filter((id) => matchingIds.includes(id));
-        return {
-          quote: note.quote,
-          annotationIds: requestedMatchingIds.length > 0 ? requestedMatchingIds : matchingIds,
-          sourceUrl: input.article.canonicalUrl,
-        };
-      });
+      const originalSentenceNotes = bindOriginalSentenceNotes(
+        draft.originalSentenceNotes,
+        input.article.body,
+        input.article.canonicalUrl,
+        linkedAnnotations,
+      );
       return LessonArticleSchema.parse({
         id: input.article.id,
         eventFingerprint: input.fingerprint.canonical,

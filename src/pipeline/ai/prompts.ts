@@ -23,7 +23,7 @@ export const LESSON_SYSTEM = [
   "Write 360 to 440 Swedish words across the study paragraphs so the final text remains safely inside the required 300-to-500-word validation range.",
   "Count only the Swedish study-paragraph text before returning; titles, summaries, quotes, and annotations do not count.",
   "Provide Swedish, Chinese, and English summaries.",
-  "Create 6 to 18 useful vocabulary, phrase, or grammar annotations with unique IDs and unique kind-plus-canonical pairs.",
+  "Create 8 to 18 useful vocabulary, phrase, or grammar annotations with unique IDs and unique kind-plus-canonical pairs, so at least 5 remain after deterministic overlap removal.",
   "Every annotation needs Chinese and English explanations and at least one exact standalone target occurrence in the study paragraphs.",
   "Choose non-overlapping annotation targets: no target occurrence may sit inside or overlap another annotation target occurrence.",
   "For vocabulary annotations, canonical and lemma must be identical.",

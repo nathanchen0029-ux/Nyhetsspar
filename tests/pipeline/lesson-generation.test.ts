@@ -295,6 +295,25 @@ describe("OpenAI lesson gateway", () => {
     )).toBe(true);
   });
 
+  it("replaces unbound model quotes with short verbatim source excerpts that contain linked annotations", async () => {
+    const output = draft();
+    output.originalSentenceNotes = [
+      { quote: "Kommunerna får nya regler.", annotationIds: ["vocabulary:studieord0"] },
+      { quote: "Beslutet gäller 42 kommuner.", annotationIds: ["vocabulary:studieord1"] },
+    ];
+    const client = { responses: { parse: async () => ({ output_parsed: output, usage: { input_tokens: 1, output_tokens: 2 } }) } };
+    const result = await createOpenAiGateway({ apiKey: "test", client: client as never, model: "model" }).generateLesson(selected());
+    expect(result.originalSentenceNotes.map((note) => note.quote)).toEqual([
+      "Förändringen träder i kraft i januari.",
+      "Förändringen träder i kraft efter beslutet.",
+    ]);
+    expect(result.originalSentenceNotes.every((note) =>
+      note.annotationIds.includes("phrase:träda-i-kraft-0") &&
+      countWords(note.quote) <= 25 &&
+      sourceBody.includes(note.quote),
+    )).toBe(true);
+  });
+
   it("requires complete fact-check claim IDs and verbatim short primary-source evidence", async () => {
     const client = { responses: { parse: async () => ({ output_parsed: { items: [] }, usage: { input_tokens: 1, output_tokens: 2 } }) } };
     const gateway = createOpenAiGateway({ apiKey: "test", client: client as never });
@@ -371,4 +390,8 @@ function draft() {
     id: "model-controlled-id",
     sourceUrl: "https://evil.test/",
   };
+}
+
+function countWords(text: string): number {
+  return text.trim().split(/\s+/u).length;
 }

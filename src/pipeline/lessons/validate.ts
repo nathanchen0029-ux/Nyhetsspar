@@ -17,7 +17,7 @@ export function isWholeTargetIn(text: string, target: string): boolean {
 export function quoteForms(annotation: Annotation): string[] {
   if (annotation.kind === "grammar") return [...annotation.targets, annotation.sourceFragment];
   if (annotation.kind === "phrase") return [...annotation.targets, annotation.sourceForm, annotation.canonicalForm, ...annotation.verbForms];
-  return annotation.targets;
+  return [...annotation.targets, annotation.surface, annotation.canonical, annotation.lemma, ...annotation.inflections];
 }
 
 export function annotationAppearsInText(annotation: Annotation, text: string): boolean {
