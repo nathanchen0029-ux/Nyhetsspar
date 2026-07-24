@@ -24,9 +24,9 @@ export function lessonFactClaims(lesson: Awaited<ReturnType<typeof validateLesso
 function lessonRepairReason(error: Error): string {
   if (!(error instanceof ZodError)) return error.message;
   const wordCountFailure = error.issues.some((issue) =>
-    issue.path.some((part) => part === "wordCount" || part === "studyParagraphs"));
+    issue.path.some((part) => part === "wordCount" || part === "studyParagraphs" || part === "paragraphs"));
   if (wordCountFailure) {
-    return "lesson-word-count-out-of-range: rewrite the study paragraphs to contain 360 to 440 Swedish words; count paragraph text only";
+    return "lesson-word-count-out-of-range: return exactly 4 study paragraphs with 90 to 110 Swedish words each; count paragraph text only";
   }
   const issues = error.issues.slice(0, 8).map((issue) => {
     const path = issue.path.filter((part): part is string | number =>

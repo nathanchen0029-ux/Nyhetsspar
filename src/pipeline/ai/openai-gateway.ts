@@ -17,7 +17,7 @@ const DuplicateBatchSchema = z.object({ items: z.array(z.object({
 })) });
 const LessonDraftSchema = z.object({
   studyTitle: z.string().min(1),
-  paragraphs: z.array(z.string().min(1)).min(2),
+  paragraphs: z.array(z.string().min(1)).length(4),
   difficulty: z.object({
     level: z.string().regex(/^(?:A1|A2|B1|B2|C1|C2)(?:[–-](?:A1|A2|B1|B2|C1|C2))?$/u),
     reasons: z.array(z.string().min(1)).min(1),
@@ -196,6 +196,7 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
     system: string,
     payload: unknown,
     maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS,
+    verbosity?: "low" | "medium" | "high",
   ): Promise<T> {
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -205,7 +206,7 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
           max_output_tokens: maxOutputTokens,
           ...(model.startsWith("gpt-5.6") ? { reasoning: { effort: "none" as const } } : {}),
           input: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(payload) }],
-          text: { format: zodTextFormat(schema, name) },
+          text: { format: zodTextFormat(schema, name), ...(verbosity === undefined ? {} : { verbosity }) },
         }, { maxRetries: 0 });
         if (!response.output_parsed) throw new Error(`openai-empty-structured-output:${name}`);
         const usage = response.usage;
@@ -251,6 +252,7 @@ export function createOpenAiGateway(options: OpenAiGatewayOptions): AiGateway {
           repairReason,
         },
         LESSON_MAX_OUTPUT_TOKENS,
+        model.startsWith("gpt-5.6") ? "high" : undefined,
       ));
       const studyParagraphs = decorateParagraphs(draft.paragraphs, draft.annotations);
       const linkedAnnotationIds = new Set(

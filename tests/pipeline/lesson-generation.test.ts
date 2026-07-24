@@ -211,7 +211,7 @@ describe("validated lesson generation", () => {
     await expect(generateValidatedLesson(selected(), gateway)).resolves.toMatchObject({ id: "one" });
     expect(reasons).toEqual([
       undefined,
-      "lesson-word-count-out-of-range: rewrite the study paragraphs to contain 360 to 440 Swedish words; count paragraph text only",
+      "lesson-word-count-out-of-range: return exactly 4 study paragraphs with 90 to 110 Swedish words each; count paragraph text only",
     ]);
   });
 
@@ -273,7 +273,7 @@ describe("validated lesson generation", () => {
 describe("OpenAI lesson gateway", () => {
   it("assembles trusted metadata and safe ID while exposing no related body to the model", async () => {
     const payloads: unknown[] = [];
-    const requests: Array<{ max_output_tokens?: number; input: Array<{ content: string }> }> = [];
+    const requests: Array<{ max_output_tokens?: number; input: Array<{ content: string }>; text?: { verbosity?: string } }> = [];
     const client = {
       responses: {
         parse: async (params: { input: Array<{ content: string }> }) => {
@@ -283,12 +283,13 @@ describe("OpenAI lesson gateway", () => {
         },
       },
     };
-    const result = await createOpenAiGateway({ apiKey: "test", client: client as never, model: "model" }).generateLesson(selected());
+    const result = await createOpenAiGateway({ apiKey: "test", client: client as never, model: "gpt-5.6-luna" }).generateLesson(selected());
     expect(result).toMatchObject({ id: "one", sourceUrl, eventFingerprint: "untrusted-model-canonical", isFollowUp: true, contentHash: "sha256:test" });
     expect(JSON.stringify(payloads[0])).not.toContain("relatedCoverage");
     expect(JSON.stringify(payloads[0])).not.toContain("Relaterad hemlig rubrik");
     expect(JSON.stringify(payloads[0])).not.toContain("hemlig relaterad text");
     expect(requests[0]?.max_output_tokens).toBe(8_000);
+    expect(requests[0]?.text?.verbosity).toBe("high");
     expect(result.annotations).toHaveLength(6);
     expect(result.originalSentenceNotes.every((note) =>
       note.annotationIds.every((id) => result.annotations.some((annotation) => annotation.id === id)),
@@ -369,9 +370,15 @@ describe("OpenAI lesson gateway", () => {
 
 function draft() {
   const lesson = validLesson();
+  const studyWords = lesson.studyParagraphs
+    .flatMap((paragraph) => paragraph.segments.map((segment) => segment.text))
+    .join("")
+    .trim()
+    .split(/\s+/u);
   return {
     studyTitle: lesson.studyTitle,
-    paragraphs: lesson.studyParagraphs.map((paragraph) => paragraph.segments.map((segment) => segment.text).join("")),
+    paragraphs: Array.from({ length: 4 }, (_, index) =>
+      studyWords.slice(index * 75, (index + 1) * 75).join(" ")),
     difficulty: lesson.difficulty,
     summaries: lesson.summaries,
     factPoints: lesson.factPoints,
